@@ -1,0 +1,55 @@
+# ── Core ────────────────────────────────────────────────────────────────────
+django>=5.0
+djangorestframework
+django-environ
+PyJWT[crypto]
+
+# ── Database ─────────────────────────────────────────────────────────────────
+psycopg2-binary
+
+# ── Workflow ──────────────────────────────────────────────────────────────────
+django-fsm           # FSM state machines on all status fields
+viewflow             # Open-source viewflow — Board ratification & vault export flows
+
+# ── Background Tasks ─────────────────────────────────────────────────────────
+celery
+redis
+django-celery-beat
+
+# ── API ───────────────────────────────────────────────────────────────────────
+drf-spectacular      # OpenAPI schema generation
+django-filter        # Filterset support
+django-cors-headers
+
+# ── Event Streaming ───────────────────────────────────────────────────────────
+kafka-python         # Kafka producer — used by outbox Celery task
+# Note: In dev, publish() writes to OutboxEvent table only.
+# Kafka broker is optional for local development.
+
+# ── Encryption & Security ─────────────────────────────────────────────────────
+cryptography         # AES-256-GCM vault encryption (software stub in dev)
+# python-pkcs11      # Uncomment for production HSM-backed key storage
+
+# ── Storage ───────────────────────────────────────────────────────────────────
+django-storages[s3]  # MinIO / S3-compatible object storage
+boto3                # Required by django-storages S3 backend
+Pillow               # Image processing
+
+# ── PDF & Documents ───────────────────────────────────────────────────────────
+weasyprint           # Registration slips, result PDFs, audit export packages
+reportlab            # Fallback PDF generation
+
+# ── QR Codes ─────────────────────────────────────────────────────────────────
+qrcode[pil]          # Registration slip QR, exam paper barcodes
+
+# ── File Validation ───────────────────────────────────────────────────────────
+python-magic-bin; sys_platform == "win32"
+python-magic; sys_platform != "win32"
+
+# ── Production Server ─────────────────────────────────────────────────────────
+gunicorn
+whitenoise
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-decouple
+requests

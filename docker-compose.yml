@@ -1,0 +1,167 @@
+services:
+
+  db:
+    image: postgres:16-alpine
+    volumes:
+      - nbes_postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: nbes_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    # Exposed on 5434 to avoid conflict with ams-backend db on 5432
+    ports:
+      - "5434:5432"
+
+  redis:
+    image: redis:7-alpine
+    # Exposed on 6381 to avoid conflict with ams-backend redis on 6379
+    ports:
+      - "6381:6379"
+
+  web:
+    container_name: nbes-backend
+    build: .
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             gunicorn config.wsgi:application --bind 0.0.0.0:8000 --reload"
+    ports:
+      - "8003:8000"         # Direct access for debugging; normal path is via api-gateway on :8000
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      SECRET_KEY: dev-only-secret-key-change-before-production
+      DBENGINE: postgresql
+      DBNAME: nbes_db
+      DBUSER: postgres
+      DBPASSWORD: postgres
+      DBHOST: db
+      DBPORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_ENABLED: "False"
+      KEYCLOAK_ENABLED: "False"
+      VAULT_DEV_MODE: "True"
+      TIME_ZONE: Africa/Accra
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - .:/app
+
+  # ── Celery Workers ────────────────────────────────────────────────────────
+  # marking-high: exam-critical AI scoring and audit hash tasks
+  worker-marking:
+    build: .
+    command: celery -A config worker --loglevel=info -Q marking-high -c 4
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      SECRET_KEY: dev-only-secret-key-change-before-production
+      DBENGINE: postgresql
+      DBNAME: nbes_db
+      DBUSER: postgres
+      DBPASSWORD: postgres
+      DBHOST: db
+      DBPORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_ENABLED: "False"
+      KEYCLOAK_ENABLED: "False"
+      VAULT_DEV_MODE: "True"
+    depends_on:
+      - db
+      - redis
+      - web
+    volumes:
+      - .:/app
+
+  # general: moderation, results, cert-trigger, notifications
+  worker-general:
+    build: .
+    command: celery -A config worker --loglevel=info -Q moderation,results,cert-trigger,notifications -c 4
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      SECRET_KEY: dev-only-secret-key-change-before-production
+      DBENGINE: postgresql
+      DBNAME: nbes_db
+      DBUSER: postgres
+      DBPASSWORD: postgres
+      DBHOST: db
+      DBPORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_ENABLED: "False"
+      KEYCLOAK_ENABLED: "False"
+      VAULT_DEV_MODE: "True"
+    depends_on:
+      - db
+      - redis
+      - web
+    volumes:
+      - .:/app
+
+  # sla: SLA monitor, vault integrity, outbox poller
+  worker-sla:
+    build: .
+    command: celery -A config worker --loglevel=info -Q sla-monitor,vault-integrity,outbox -c 2
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      SECRET_KEY: dev-only-secret-key-change-before-production
+      DBENGINE: postgresql
+      DBNAME: nbes_db
+      DBUSER: postgres
+      DBPASSWORD: postgres
+      DBHOST: db
+      DBPORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_ENABLED: "False"
+      KEYCLOAK_ENABLED: "False"
+      VAULT_DEV_MODE: "True"
+    depends_on:
+      - db
+      - redis
+      - web
+    volumes:
+      - .:/app
+
+  # ── Celery Beat ────────────────────────────────────────────────────────────
+  beat:
+    build: .
+    command: celery -A config beat --loglevel=info
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
+      SECRET_KEY: dev-only-secret-key-change-before-production
+      DBENGINE: postgresql
+      DBNAME: nbes_db
+      DBUSER: postgres
+      DBPASSWORD: postgres
+      DBHOST: db
+      DBPORT: "5432"
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_ENABLED: "False"
+      KEYCLOAK_ENABLED: "False"
+      VAULT_DEV_MODE: "True"
+    depends_on:
+      - db
+      - redis
+      - web
+    volumes:
+      - .:/app
+
+networks:
+  default:
+    name: ams-network
+    external: true
+
+volumes:
+  nbes_postgres_data:
