@@ -36,6 +36,41 @@ from rest_framework.response import Response
 from rest_framework import status
 
 
+def success_response(data=None, *, request=None, status_code: int = status.HTTP_200_OK) -> Response:
+    """Wrap a success payload in the NBES standard envelope."""
+    request_id = ""
+    if request is not None:
+        request_id = str(getattr(request, "request_id", "")) if request else ""
+    return Response(
+        {"success": True, "data": data, "meta": {"request_id": request_id}},
+        status=status_code,
+    )
+
+
+def error_response(
+    *,
+    code: str,
+    message: str,
+    status_code: int,
+    request=None,
+    fields: dict | None = None,
+) -> Response:
+    """Wrap an error payload in the NBES standard envelope.
+
+    Prefer raising DRF exceptions so the global handler does this for you.
+    Use this helper for non-exception error paths (e.g. business rule fails
+    that map to a specific code/status not covered by DRF's defaults).
+    """
+    request_id = str(getattr(request, "request_id", "")) if request else ""
+    err: dict = {"code": code, "message": message}
+    if fields:
+        err["fields"] = fields
+    return Response(
+        {"success": False, "error": err, "meta": {"request_id": request_id}},
+        status=status_code,
+    )
+
+
 def nbes_exception_handler(exc, context):
     """Custom DRF exception handler — wraps errors in NBES standard envelope."""
     request = context.get("request")

@@ -6,7 +6,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 environ.Env.read_env(BASE_DIR / ".env")
 
-SECRET_KEY = os.environ.get("SECRET_KEY")
+SECRET_KEY = os.environ["SECRET_KEY"]
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost").split(",")
 
@@ -142,6 +142,32 @@ REST_FRAMEWORK = {
 CORS_ALLOWED_ORIGINS = os.environ.get(
     "CORS_ALLOWED_ORIGINS", "http://localhost:3000"
 ).split(",")
+
+# ── Cache (Redis) ────────────────────────────────────────────────────────────
+# Used by:
+#   - IP-level brute-force throttle counters (apps/users/throttle.py)
+#   - Future: role/permission cache (60s TTL per SRS §1.2.5)
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": os.environ.get("REDIS_URL", "redis://localhost:6379/1"),
+    }
+}
+
+# ── Auth / Session lifetimes ─────────────────────────────────────────────────
+ACCESS_TOKEN_LIFETIME_MINUTES = int(os.environ.get("ACCESS_TOKEN_LIFETIME_MINUTES", "15"))
+REFRESH_TOKEN_LIFETIME_DAYS = int(os.environ.get("REFRESH_TOKEN_LIFETIME_DAYS", "7"))
+INVITE_TOKEN_LIFETIME_DAYS = int(os.environ.get("INVITE_TOKEN_LIFETIME_DAYS", "7"))
+
+# SRS §1.2.3 — account lockout after N consecutive failed logins
+MAX_FAILED_LOGINS = int(os.environ.get("MAX_FAILED_LOGINS", "5"))
+ACCOUNT_LOCKOUT_MINUTES = int(os.environ.get("ACCOUNT_LOCKOUT_MINUTES", "15"))
+
+# SRS §1.2.6 — IP-level brute-force defence
+IP_THROTTLE_FAILS_PER_MINUTE = int(os.environ.get("IP_THROTTLE_FAILS_PER_MINUTE", "100"))
+IP_THROTTLE_FAILS_PER_DAY = int(os.environ.get("IP_THROTTLE_FAILS_PER_DAY", "1000"))
+IP_THROTTLE_MINUTES = int(os.environ.get("IP_THROTTLE_MINUTES", "15"))
+IP_BLOCK_HOURS = int(os.environ.get("IP_BLOCK_HOURS", "24"))
 
 # ── Celery ────────────────────────────────────────────────────────────────────
 CELERY_BROKER_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")

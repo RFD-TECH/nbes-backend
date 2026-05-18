@@ -4,20 +4,23 @@ shared/auth.py — JWT Authentication for NBES
 
 In dev (KEYCLOAK_ENABLED=False):
     Validates JWTs using the shared HS256 secret (JWT_SECRET_KEY).
-    Token payload must contain: user_id, email, role.
+    Token payload contains: sub, user_id, email, role, jti.
+    Looks up the Session by jti and rejects revoked sessions — this is how
+    SRS §1.2.2's 60-second permission propagation is enforced.
 
 In production (KEYCLOAK_ENABLED=True):
     Validates Keycloak-issued RS256 JWTs by fetching JWKS from the realm URL.
     Reads realm_access.roles to populate request.auth["role"].
-    Public key is cached per realm to avoid per-request JWKS fetches.
+    NOT YET IMPLEMENTED — Keycloak is the production target IdP but not online.
+    See memory/auth_mode.md for the cutover plan.
 
 Usage in views:
     request.auth["sub"]        — Keycloak sub UUID (user identity)
+    request.auth["user_id"]    — local UserProfile.id (UUID)
     request.auth["email"]      — user email
     request.auth["role"]       — primary NBES role string
     request.auth["roles"]      — full list of roles from realm_access.roles
-
-Reference: GSL IAM Keycloak Specification v1.0 § KeycloakJWTAuthentication
+    request.auth["jti"]        — session identifier; used by logout
 """
 
 import jwt
@@ -27,15 +30,7 @@ from rest_framework.exceptions import AuthenticationFailed
 
 
 class KeycloakJWTAuthentication(BaseAuthentication):
-    """
-    DRF authentication class.
-    Validates Bearer JWT from the Authorization header.
-    Populates request.auth with decoded token payload.
-    request.user is set to an AnonymousUser — identity comes from request.auth.
-
-    TODO (production): Implement JWKS fetching and RS256 validation when
-    KEYCLOAK_ENABLED=True. See GSL IAM Keycloak Specification v1.0.
-    """
+    """DRF authentication. Validates Bearer JWT and populates request.auth."""
 
     def authenticate(self, request):
         auth_header = request.headers.get("Authorization", "")
@@ -46,18 +41,12 @@ class KeycloakJWTAuthentication(BaseAuthentication):
 
         try:
             if settings.KEYCLOAK_ENABLED:
-                # TODO: Implement JWKS-based RS256 validation
-                # 1. Decode header to get kid
-                # 2. Fetch JWKS from settings.KEYCLOAK_REALM_URL + /protocol/openid-connect/certs
-                # 3. Match kid to JWKS key
-                # 4. Verify RS256 signature
-                # 5. Validate iss, exp, aud claims
+                # TODO: JWKS-based RS256 validation when Keycloak comes online.
+                # See memory/auth_mode.md and GSL IAM Keycloak Specification v1.0.
                 raise NotImplementedError(
-                    "Keycloak JWKS validation not yet implemented. "
-                    "See GSL IAM Keycloak Specification v1.0."
+                    "Keycloak JWKS validation not yet implemented."
                 )
             else:
-                # Dev mode: shared HS256 secret
                 payload = jwt.decode(
                     token,
                     settings.JWT_SECRET_KEY,
@@ -68,21 +57,57 @@ class KeycloakJWTAuthentication(BaseAuthentication):
         except jwt.InvalidTokenError as e:
             raise AuthenticationFailed(f"Invalid token: {e}")
 
-        # Normalise payload — Keycloak uses 'sub'; dev tokens use 'user_id'
+        if payload.get("type") not in (None, "access"):
+            raise AuthenticationFailed("Wrong token type for this endpoint.")
+
+        # Normalise payload — Keycloak uses 'sub'; dev tokens carry both 'sub' and 'user_id'.
         payload.setdefault("sub", payload.get("user_id", ""))
         payload.setdefault("roles", [payload.get("role", "")])
 
-        # get_or_create a thin UserProfile for Django admin compatibility
-        from apps.users.models import UserProfile
-        user, _ = UserProfile.objects.get_or_create(
-            keycloak_sub=payload["sub"],
-            defaults={
-                "email": payload.get("email", ""),
-                "role": payload.get("role", ""),
-            },
-        )
+        user = self._resolve_user(payload)
+
+        # Honor session revocation (SRS §1.2.2 — 60-second propagation).
+        jti = payload.get("jti")
+        if jti:
+            from apps.users.models import Session
+            try:
+                session = Session.objects.only("revoked_at").get(jti=jti)
+            except Session.DoesNotExist:
+                raise AuthenticationFailed("Session not found.")
+            if session.revoked_at is not None:
+                raise AuthenticationFailed("Session has been revoked.")
 
         return user, payload
+
+    def _resolve_user(self, payload):
+        """Look up or mirror the UserProfile referenced by the JWT.
+
+        Dev mode: tokens are issued by our own auth_service, so user_id matches
+        a local UserProfile. Keycloak mode: keycloak_sub is the link.
+        """
+        from apps.users.models import UserProfile
+
+        user_id = payload.get("user_id") or None
+        sub = payload.get("sub") or None
+
+        if user_id:
+            try:
+                return UserProfile.objects.get(id=user_id)
+            except UserProfile.DoesNotExist:
+                pass
+
+        if sub:
+            # Keycloak mode: mirror the user record on first sight.
+            user, _ = UserProfile.objects.get_or_create(
+                keycloak_sub=sub,
+                defaults={
+                    "email": payload.get("email", "") or f"{sub}@unknown",
+                    "role": payload.get("role", ""),
+                },
+            )
+            return user
+
+        raise AuthenticationFailed("Token missing sub/user_id.")
 
     def authenticate_header(self, request):
         return "Bearer"

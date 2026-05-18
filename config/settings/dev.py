@@ -7,8 +7,3 @@ EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
 # Allow all hosts in dev
 ALLOWED_HOSTS = ["*"]
-
-# Show full tracebacks in API error responses during development
-REST_FRAMEWORK = {
-    **globals().get("REST_FRAMEWORK", {}),
-}

@@ -2,7 +2,7 @@
 import uuid
 import hashlib
 import json
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 
@@ -52,37 +52,45 @@ class AuditEvent(models.Model):
                 request_id=getattr(request, "request_id", None),
             )
         """
-        last = cls.objects.order_by("-id").values("chain_hash").first()
-        previous_hash = last["chain_hash"] if last else "0" * 64
+        with transaction.atomic():
+            # select_for_update prevents concurrent writers from forking the chain.
+            last = (
+                cls.objects.select_for_update()
+                .order_by("-id")
+                .values("chain_hash")
+                .first()
+            )
+            previous_hash = last["chain_hash"] if last else "0" * 64
 
-        event_id = kwargs.pop("event_id", uuid.uuid4())
-        payload = json.dumps({
-            "event_id": str(event_id),
-            "actor_id": str(kwargs.get("actor_id", "")),
-            "action": action,
-            "entity_type": kwargs.get("entity_type", ""),
-            "entity_id": str(kwargs.get("entity_id", "")),
-            "new_state": kwargs.get("new_state", {}),
-            "created_at": timezone.now().isoformat(),
-        }, sort_keys=True)
+            event_id = kwargs.pop("event_id", uuid.uuid4())
+            payload = json.dumps({
+                "event_id": str(event_id),
+                "actor_id": str(kwargs.get("actor_id", "")),
+                "action": action,
+                "entity_type": kwargs.get("entity_type", ""),
+                "entity_id": str(kwargs.get("entity_id", "")),
+                "new_state": kwargs.get("new_state", {}),
+                "created_at": timezone.now().isoformat(),
+            }, sort_keys=True)
 
-        chain_hash = hashlib.sha256(
-            f"{previous_hash}{payload}".encode()
-        ).hexdigest()
+            chain_hash = hashlib.sha256(
+                f"{previous_hash}{payload}".encode()
+            ).hexdigest()
 
-        event = cls.objects.create(
-            event_id=event_id,
-            action=action,
-            chain_hash=chain_hash,
-            **kwargs,
-        )
+            event = cls.objects.create(
+                event_id=event_id,
+                action=action,
+                chain_hash=chain_hash,
+                **kwargs,
+            )
 
-        # Forward to System 22 via outbox
-        from shared.events import publish
-        publish("AuditEventRecorded", {
-            "event_id": str(event.event_id),
-            "chain_hash": chain_hash,
-        }, topic="nbes.audit")
+            # Forward to System 22 via outbox — same transaction so the audit
+            # row and the outbox row commit together.
+            from shared.events import publish
+            publish("AuditEventRecorded", {
+                "event_id": str(event.event_id),
+                "chain_hash": chain_hash,
+            }, topic="nbes.audit")
 
         return event
 

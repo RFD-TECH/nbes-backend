@@ -1,5 +1,6 @@
 """apps/cert_trigger/models.py — Certificate trigger on confirmed PASS result."""
 import uuid
+from datetime import timedelta
 from django.db import models
 from django.utils import timezone
 
@@ -43,7 +44,7 @@ class CertTriggerRecord(models.Model):
         """Mark as fired and set 1-hour SLA deadline."""
         self.status = self.Status.FIRED
         self.fired_at = timezone.now()
-        self.sla_deadline = timezone.now() + timezone.timedelta(hours=1)
+        self.sla_deadline = timezone.now() + timedelta(hours=1)
         self.save(update_fields=["status", "fired_at", "sla_deadline"])
         from shared.events import publish
         publish("CertTriggerFired", {

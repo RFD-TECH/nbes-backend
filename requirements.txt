@@ -30,6 +30,10 @@ kafka-python         # Kafka producer — used by outbox Celery task
 cryptography         # AES-256-GCM vault encryption (software stub in dev)
 # python-pkcs11      # Uncomment for production HSM-backed key storage
 
+# ── MFA ──────────────────────────────────────────────────────────────────────
+pyotp                # TOTP (RFC 6238) for MFA enrolment & verification
+webauthn             # py_webauthn — FIDO2 / WebAuthn registration & assertion
+
 # ── Storage ───────────────────────────────────────────────────────────────────
 django-storages[s3]  # MinIO / S3-compatible object storage
 boto3                # Required by django-storages S3 backend
