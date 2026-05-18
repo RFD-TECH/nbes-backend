@@ -1,38 +1,68 @@
 ---
 name: nbes-backend
 description: >
-  Backend blueprint and implementation guide for the NBES Core Platform (System 10A).
-  Use this skill when implementing any feature in the nbes-backend service.
-  Covers system architecture, all 13 Django apps, 10 implementation phases, RBAC,
-  audit, integrations, validation rules, testing strategy, and risks.
+  Blueprint for the NBES Core Platform (System 10A) — Phase 1 only:
+  Authentication, RBAC, MFA, audit substrate, and the integration patterns
+  (System 17 / System 22) that every later phase will consume. Use this skill
+  for any change to shared/auth.py, shared/permissions.py, shared/events.py,
+  shared/vault.py, shared/middleware.py, shared/exceptions.py, apps/users/,
+  apps/audit/, or anything that touches identity, sessions, MFA, RBAC,
+  permission checks, audit events, the outbox, the daily hash anchor, brute-
+  force defence, or the two-Administrator approval flow.
+  Project structure is fixed — do not restructure apps or shared modules.
+  Phase 2–10 work lives in separate skills; do not pre-build it here.
+  Task-level breakdowns live in tasks.md — this file is the blueprint, not
+  the to-do list.
 ---
 
-# NBES Core Platform — Backend Blueprint
+# NBES Core Platform — Phase 1: Foundation
 
 **System**: 10A — National Bar Examination System (NBES) Core Platform
 **Framework**: Django 5 / DRF · PostgreSQL 16 · Celery · Redis · Kafka
 **Legislative basis**: §§65–73 of the Legal Practitioners Act (Ghana)
 **Port**: 8003 (direct) / 8000 via API Gateway (System 17)
+**Phase 1 SRS reference**: REQ-F000 (F000-01 … F000-06)
+
+Phase 1 builds the floor on which every other module stands: authenticated
+users with the right roles, an audit substrate that makes every later action
+defensible, and the integration patterns (System 17 for outbound calls,
+System 22 for audit) that subsequent phases will reuse rather than re-invent.
+
+This skill covers Phase 1 only. Phases 2–10 (committee, item bank, sitting
+config, registration, marking, results, re-sit, cert trigger) are out of scope
+here — they live in their own skills and have their own blueprints.
 
 ---
 
-## 1. Context Before You Write a Line
+## 1. Invariants — Apply to Every Change
 
-This is a high-stakes, legally auditable examination system. Every decision it records can be
-cited in judicial review. Follow these invariants in every change:
+These are non-negotiable. Code that violates any of them is wrong even if
+the tests pass. They are the things a judicial-review auditor will check first.
 
-1. Every state change must emit an `AuditEvent` via `AuditEvent.record(...)`.
-2. All domain events must publish to the outbox via `shared.events.publish(...)`.
-3. FSM transitions are the **only** way to change status fields — never set them directly.
-4. Vault operations (Item content) must go through `shared.vault`.
-5. Inter-system calls go through `shared.events.publish()` + Kafka/System 17 outbox — never raw HTTP in services.
-6. All views must use `HasPermission` or `has_permission()` from `shared.permissions`.
-7. Standard response envelope: `success_response()` / `error_response()` from `shared.exceptions`.
-8. Business logic lives in `services.py`, not views.
+1. **Every state change emits an `AuditEvent`** via `AuditEvent.record(...)`.
+   No exceptions — including failed authorisations (403), failed logins,
+   role changes, MFA enrolments, and account deactivations.
+2. **All domain events publish to the outbox** via `shared.events.publish(...)`
+   in the **same DB transaction** as the state change. Wrap service methods
+   in `@transaction.atomic` whenever they both save state and publish.
+3. **Views never set status fields directly.** For Phase 1 entities with
+   lifecycle (sessions, accounts), state transitions go through service
+   methods — never inline assignment in a view.
+4. **Inter-system calls go through `shared.events.publish()` + Kafka/System 17
+   outbox** — never raw HTTP inside a service. The outbox guarantees at-least-
+   once delivery; raw HTTP loses events on partial failure.
+5. **All views use `HasPermission` or `has_permission()`** from
+   `shared.permissions`. There is no implicit allow.
+6. **Standard response envelope**: `success_response()` / `error_response()`
+   from `shared.exceptions`. Clients depend on the shape.
+7. **Business logic lives in `services.py`, not views.** Views validate
+   input, call a service, and return the envelope. Nothing else.
+8. **Audit emission must never block the originating action.** Failures fall
+   back to a local append-only file and replay on recovery.
 
 ---
 
-## 2. Project Structure
+## 2. Project Structure (Fixed — Do Not Restructure)
 
 ```
 config/              Django project config (settings, urls, celery)
@@ -41,7 +71,7 @@ config/              Django project config (settings, urls, celery)
     dev.py           Dev overrides (KEYCLOAK_ENABLED=False, SQLite ok)
     prod.py          Production (Keycloak RS256, Kafka, HSM vault)
 
-shared/              Cross-cutting infrastructure — import freely from any app
+shared/              Cross-cutting infrastructure — Phase 1 owns most of this
   auth.py            KeycloakJWTAuthentication (HS256 dev, RS256 prod)
   permissions.py     HasPermission + ROLE_PERMISSION_MAP
   events.py          publish() → OutboxEvent → Kafka
@@ -53,29 +83,27 @@ shared/              Cross-cutting infrastructure — import freely from any app
   storage.py         MinIO/S3 object storage helpers
 
 workflow/
-  guards.py          FSM guard conditions (many have TODO stubs — see §6)
+  guards.py          FSM guard conditions (Phase 2+ owns most of these)
   signals.py         Post-transition Django signals
-  viewflow/
-    ratification.py  Board ratification flow (django-viewflow)
-    vault_export.py  Multi-party vault export flow
 
 apps/
   users/             UserProfile — thin local profile (Keycloak owns auth)
-  committee/         NBEC members, meetings, minutes, conflict-of-interest
-  itembank/          Item authoring, vault, peer review, paper construction
-  sitting/           Exam cycle config, blueprint, T-30 lock
-  registration/      Candidate registration, NLEMS gate, index numbers
-  marking/           AI scoring, borderline flagging, moderation, reconciliation
-  results/           Normalisation, Board ratification, publication
-  resit/             Attempt counter, §73 limit, NBEC exceptions
-  cert_trigger/      Trigger System 14 on confirmed PASS (1-hour SLA)
-  notifications/     Notification orchestration → System 21
-  audit/             AuditEvent + OutboxEvent models (fully implemented)
-  sla/               SLA monitor — 21-day publication, cert trigger deadlines
-  reporting/         KPI aggregation, audit exports
+  audit/             AuditEvent + OutboxEvent (Phase 1 — fully owned here)
+  committee/         (Phase 2 — out of scope for this skill)
+  itembank/          (Phase 3 — out of scope)
+  sitting/           (Phase 4 — out of scope)
+  registration/      (Phase 5 — out of scope)
+  marking/           (Phase 9 — out of scope)
+  results/           (Phase 10 — out of scope)
+  resit/             (Phase 10 — out of scope)
+  cert_trigger/      (Phase 10 — out of scope)
+  notifications/     (Phase 1 uses System 21 directly; full fabric is later)
+  sla/               (Phase 10 — out of scope; outbox poller lives here)
+  reporting/         (Phase 10 — out of scope)
 ```
 
-Each app follows this structure:
+Each app under `apps/` follows this layout:
+
 ```
 app/
   models.py      Data + FSM transitions only
@@ -95,582 +123,412 @@ app/
     test_tasks.py
 ```
 
+Phase 1 work touches `shared/`, `apps/users/`, `apps/audit/`, `config/settings/`,
+and adds Celery Beat entries for the daily hash anchor and outbox poller.
+**Do not create new top-level apps for Phase 1 work** — the structure above is
+the contract.
+
 ---
 
-## 3. RBAC Matrix
+## 3. Phase 1 Status — What's Done, What's Pending
+
+### Already implemented
+
+- `shared/auth.py` — `KeycloakJWTAuthentication` (HS256 dev mode)
+- `shared/permissions.py` — `ROLE_PERMISSION_MAP` + `HasPermission` class
+- `apps/audit/models.py` — `AuditEvent` and `OutboxEvent` with SHA-256 chain hash
+- `shared/middleware.py` — `AuditMiddleware` injects `request_id`, `ip_address`
+- `shared/events.py` — `publish()` writes to outbox
+- `shared/exceptions.py` — `nbes_exception_handler` + standard envelope helpers
+- `apps/users/models.py` — `UserProfile` (thin local profile; Keycloak owns auth)
+
+### Pending — the Phase 1 backlog
+
+These are blueprint-level descriptions of what needs to exist. **The task-level
+breakdown lives in `tasks.md`** — read that for sprint sequencing and acceptance
+criteria. The items below tell you *what shape* each piece must take.
+
+1. **Keycloak RS256 JWKS validation** in `shared/auth.py`
+   - Currently HS256 with a shared secret (dev only).
+   - Prod must fetch JWKS from `settings.KEYCLOAK_JWKS_URL`, cache keys, verify
+     RS256, and validate `iss`, `aud`, `exp`, `nbf`.
+   - Must support key rotation without restart.
+   - Mode switched by `settings.KEYCLOAK_ENABLED`.
+
+2. **`HasPermission.has_permission()`** in `shared/permissions.py`
+   - Resolve `request.auth["role"]` → permission set via `ROLE_PERMISSION_MAP`.
+   - On deny, **record an `AuditEvent`** with action `AUTHZ_DENIED`,
+     entity_type=`"endpoint"`, entity_id=request path, before/after empty.
+   - Return generic message to client (no leakage of *why* it was denied).
+
+3. **Session revocation via JTI invalidation**
+   - On deactivation or role revocation, write the JTI to a Redis-backed
+     blocklist with TTL = remaining token lifetime.
+   - `KeycloakJWTAuthentication` checks the blocklist on every request.
+   - SLA: revocation effective within **60 seconds** end-to-end.
+
+4. **Bulk user import** — `POST /api/v1/admin/users/import`
+   - CSV/Excel upload, schema-validated against a versioned schema.
+   - Partial success: valid rows committed, invalid rows reported with
+     row-level errors.
+   - Each created user gets an invite email via System 21.
+   - File hash recorded with the bulk import `AuditEvent`; original retained 7y.
+
+5. **Two-Administrator approval flow** for high-privilege role assignments
+   (NBEC Chair, DG, System Administrator)
+   - First Administrator submits the assignment → status `pending_approval`.
+   - Second Administrator (must be different user) approves → effective.
+   - Second approver cannot be the same as the requester (server-side check).
+   - Both actions audit-logged with a shared correlation_id.
+
+6. **Daily hash anchor export to System 22** via Celery Beat
+   - Task: `apps.audit.tasks.export_daily_hash_anchor`.
+   - Schedule: 01:00 UTC daily, queue `sla-monitor`.
+   - Compute head hash of yesterday's `AuditEvent` chain, write a
+     `DailyHashAnchor` row, publish to System 22 via outbox.
+   - Failure pages the on-call (alert via System 21).
+
+7. **Brute-force defence**
+   - IP-level throttle: 100 failed logins/min → 15-minute block.
+   - IP-level escalation: 1000 failed logins/24h → 24-hour block.
+   - Account lockout: 5 consecutive failed logins → 15-minute cooldown,
+     user notified by email.
+   - Counters in Redis with sliding window; blocks enforced in
+     `KeycloakJWTAuthentication` and the login endpoint.
+   - Each threshold crossing emits an `AuditEvent` with action
+     `BRUTE_FORCE_THROTTLE` or `BRUTE_FORCE_BLOCK`.
+
+8. **`UserProfile` management endpoints**
+   - Model exists; views do not. CRUD gated on `users:manage` permission.
+   - On create, fan out to Keycloak via System 17 (don't write Keycloak
+     directly from the service — go through the outbox).
+
+9. **MFA enforcement gate**
+   - All internal roles (everyone except `candidate`) must have
+     `mfa_enrolled=True` on their `UserProfile` before any non-auth endpoint
+     succeeds. If `mfa_enrolled=False`, return 403 with code `MFA_REQUIRED`.
+   - Step-up MFA required for: vault export, Board ratification, results
+     publication, role assignment, password reset for another user. Phase 1
+     ships the gate; later phases call into it.
+
+---
+
+## 4. RBAC Matrix
 
 Roles come from `request.auth["role"]` (set by `KeycloakJWTAuthentication`).
+The matrix below is the **full** consolidated role list across 10A and 10B;
+Phase 1 ships the map and the gateway, even where the consuming features
+land in later phases.
 
 | Role | Key Permissions |
 |---|---|
-| `nbec-member` | item:approve, sitting:configure, results:ratify, results:publish:approve (via clet-registrar path), audit:export, committee:manage, resit:exception:grant |
+| `nbec-member` | item:approve, sitting:configure, results:ratify, results:publish:approve, audit:export, committee:manage, resit:exception:grant |
 | `nbec-secretariat` | committee:manage, sla:view, reporting:view |
 | `item-writer` | item:create |
 | `moderator` | item:approve, marking:moderate |
 | `examiner` | marking:second_mark |
 | `clet-registrar` | registration:eligibility:override, results:publish:approve, cert:trigger, sla:view |
 | `candidate` | registration:self, results:view:own, resit:register |
-| `invigilator` | (System 10B operations — check-in, proctoring) |
-| `system-administrator` | All admin operations |
-| `auditor` | audit:export |
+| `invigilator` | (System 10B — check-in, proctoring) |
+| `centre-coordinator` | (System 10B — centre operations) |
+| `remote-proctor` | (System 10B — proctoring queue) |
+| `dti-operations` | system:health:view, integrations:manage |
+| `service-desk-agent` | candidate:lookup, ticket:manage |
+| `system-administrator` | All admin operations including users:manage, roles:manage |
+| `auditor` | audit:export, audit:search |
 
-Permission check in views:
+**Permission check pattern in views:**
+
 ```python
 from shared.permissions import has_permission
-permission_classes = [IsAuthenticated, has_permission("item:approve")]
+
+class UserProfileViewSet(ViewSet):
+    permission_classes = [IsAuthenticated, has_permission("users:manage")]
 ```
 
-Every 403 must be audit-logged. The TODO in `shared/permissions.py` `HasPermission.has_permission()` needs implementation.
+**Mutually exclusive roles** (server-side rejected on assignment):
+- `item-writer` + `moderator` on the same `item`
+- `invigilator` + `candidate` at all times (same user)
+- `examiner` + `candidate` for the same sitting
+
+**Multiple roles per user** is supported in the data model
+(`user_role` is many-to-one on user). The current single-role read from
+`request.auth["role"]` is a known limitation flagged in §10.
 
 ---
 
-## 4. Audit Pattern
+## 5. Audit Pattern
 
 Every service method that mutates state must call:
+
 ```python
 AuditEvent.record(
-    actor_id=request.auth["sub"],      # Keycloak UUID
-    action="ITEM_APPROVED",            # SCREAMING_SNAKE from apps/<app>/events.py
-    entity_type="item",
-    entity_id=item.id,
+    actor_id=request.auth["sub"],          # Keycloak UUID
+    action="USER_DEACTIVATED",             # SCREAMING_SNAKE from apps/<app>/events.py
+    entity_type="user",
+    entity_id=user.id,
     old_state={"status": old_status},
-    new_state={"status": item.status},
+    new_state={"status": user.status},
     request_id=getattr(request, "request_id", None),
     ip_address=getattr(request, "ip_address", None),
 )
 ```
 
 `AuditEvent.record()` automatically:
-- Computes the SHA-256 chain hash
-- Publishes `AuditEventRecorded` to the outbox → System 22
+- Computes the SHA-256 chain hash (`prev_hash || canonical_event_json`).
+- Publishes `AuditEventRecorded` to the outbox → System 22.
+
+**Phase 1 standard event names** (define in `apps/audit/events.py` and
+`apps/users/events.py`):
+
+```python
+# apps/users/events.py
+USER_CREATED          = "UserCreated"
+USER_UPDATED          = "UserUpdated"
+USER_DEACTIVATED      = "UserDeactivated"
+ROLE_ASSIGNED         = "RoleAssigned"
+ROLE_REVOKED          = "RoleRevoked"
+MFA_ENROLLED          = "MfaEnrolled"
+MFA_CLEARED_BY_ADMIN  = "MfaClearedByAdmin"
+PASSWORD_CHANGED      = "PasswordChanged"
+LOGIN_SUCCESS         = "LoginSuccess"
+LOGIN_FAILED          = "LoginFailed"
+SESSION_REVOKED       = "SessionRevoked"
+BULK_IMPORT_COMPLETED = "BulkImportCompleted"
+AUTHZ_DENIED          = "AuthzDenied"
+BRUTE_FORCE_THROTTLE  = "BruteForceThrottle"
+BRUTE_FORCE_BLOCK     = "BruteForceBlock"
+TWO_ADMIN_APPROVAL_REQUESTED = "TwoAdminApprovalRequested"
+TWO_ADMIN_APPROVAL_GRANTED   = "TwoAdminApprovalGranted"
+```
+
+**Why audit emission is async with local-file fallback**: the originating
+business action must not fail because System 22 is unreachable. The outbox
+relay handles delivery; on outbox failure, emission falls back to a local
+append-only file that replays when the outbox is healthy again.
 
 ---
 
-## 5. Event Publishing Pattern
+## 6. Event Publishing Pattern
 
 For domain events (not audit), use:
+
 ```python
 from shared.events import publish
-publish("ItemApproved", {"item_id": str(item.id)})
+
+publish("UserDeactivated", {"user_id": str(user.id), "reason": reason})
 ```
 
-`publish()` writes an `OutboxEvent` row in the **same DB transaction**. Always wrap service
-methods in `@transaction.atomic` when they both save state AND publish events.
+`publish()` writes an `OutboxEvent` row in the **same DB transaction**.
+Always wrap service methods in `@transaction.atomic` when they both save
+state AND publish events. The outbox poller (`apps/sla/tasks.py`, queue
+`outbox`) runs every 5 seconds and ships events to Kafka.
 
-Kafka topics are inferred from the event name prefix (`_infer_topic` in `shared/events.py`).
-In dev (`KAFKA_ENABLED=False`), events live in the DB only.
+Kafka topics are inferred from the event name prefix (`_infer_topic` in
+`shared/events.py`). In dev (`KAFKA_ENABLED=False`), events live in the
+outbox table only — useful for assertion in tests.
 
 ---
 
-## 6. FSM Guard TODOs (Priority Implementation)
+## 7. Integration Patterns (Substrate Owned by Phase 1)
 
-The following guards in `workflow/guards.py` have placeholder `return True` stubs and must be
-implemented before their respective features are shippable:
+Later phases consume these patterns. Get them right here, once.
 
-| Guard | App | What needs implementing |
+### 7.1 Outbound calls via System 17
+
+```python
+# shared/integrations.py — to be created in Phase 1
+def call_system_17(endpoint, payload, *, method="POST", correlation_id=None):
+    """
+    Signed HTTP to System 17 with:
+      - nonce + timestamp + HMAC signature (replay protection)
+      - exponential backoff retry (3 attempts, 1s/4s/16s)
+      - correlation_id propagation (W3C Trace Context)
+      - mutual TLS in prod
+    Returns {code, data, correlation_id, retryable} envelope.
+    """
+```
+
+| Target | Env Var | Pattern |
 |---|---|---|
-| `has_valid_mcq_config` | itembank | Validate `metadata["options"]` — exactly 1 correct answer for MCQ |
-| `has_sufficient_panel_votes` | itembank | Count `ItemPanelVote` records — 2 of 3 votes required |
-| `no_active_conflict` | itembank / marking | Check `ConflictDeclaration` for actor vs item/script subject |
-| `is_moderation_panel_member` | itembank | Check actor role from thread-local request |
-| `nlems_eligibility_verified` | registration | Reads `candidate.eligibility_status == "eligible"` — ✅ implemented |
-| `payment_confirmed` | registration | Reads `registration.payment_confirmed` — ✅ implemented |
-| `ai_scoring_complete` | marking | Reads `marking_decision.ai_mark` — ✅ implemented |
-| `is_borderline` | marking | Reads `script.borderline_flagged` — set by borderline engine task |
-| `no_moderator_conflict` | marking | Check `ConflictDeclaration` for moderator vs candidate |
-| `has_justification` | marking | Word-count check on `marking_decision.justification` — ✅ implemented |
-| `reconciliation_required` | marking | Reads `script.reconciliation_required` — set by moderation service |
-| `below_attempt_limit` | resit | Check `AttemptCounter` for candidate + paper vs §73 limit |
+| **System 17** (API Layer) | `SYSTEM_17_URL` | Signed HTTP + replay protection — all outbound inter-system calls |
+| **System 22** (Audit) | via Kafka `nbes.audit` | Outbox → Kafka — tamper-evident audit storage |
+| **System 21** (Communications) | `SYSTEM_21_URL`, `SYSTEM_21_API_KEY` | Outbound REST — invite emails, lockout notifications, password resets |
+| **Keycloak** | `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_JWKS_URL` | Identity provider — JWKS in prod, shared secret in dev |
+
+### 7.2 Inbound webhooks
+
+Phase 1 does not own inbound webhooks (Phase 5 owns the payment webhook
+from System 20). Phase 1 ships the **HMAC verification helper** in
+`shared/integrations.py` for later phases to call.
+
+### 7.3 Outbox pattern
+
+Every NBES service writes domain events to the `OutboxEvent` table in the
+**same DB transaction** as the state change. The outbox relay
+(Celery task `apps/sla/tasks.py:relay_outbox`) ships them to Kafka with
+at-least-once semantics. Consumers must be idempotent.
+
+### 7.4 Idempotency keys
+
+Every state-mutating API call accepts an optional `Idempotency-Key` header.
+Phase 1 ships the middleware that caches the response for 24h keyed on
+(actor_id, endpoint, idempotency_key) — later phases just rely on it.
 
 ---
 
-## 7. Implementation Phases
+## 8. Celery Queues — Phase 1 Allocation
 
-### Phase 1 — Authentication, RBAC & Foundation
-**SRS Ref**: REQ-F000 | **Status**: Partially complete (shared/auth.py, shared/permissions.py, apps/audit/)
-
-**What's done:**
-- `KeycloakJWTAuthentication` (dev HS256 mode; prod JWKS TODO)
-- `ROLE_PERMISSION_MAP` + `HasPermission`
-- `AuditEvent` + `OutboxEvent` models with SHA-256 chain hash
-- `AuditMiddleware` (request_id, IP injection)
-
-**What's pending (Phase 1 backlog):**
-- Keycloak RS256 JWKS validation in `shared/auth.py` (TODO block)
-- `HasPermission.has_permission()` → record 403 audit events
-- Session revocation via JTI invalidation (see IAM service pattern)
-- Bulk user import endpoint (`POST /api/v1/admin/users/import`)
-- Two-Administrator approval flow for high-privilege roles
-- Daily hash anchor export to System 22 via Celery Beat
-- Brute-force: IP-level throttle at 100 failed/min → 15 min block; 1000/24h → 24h block
-- `UserProfile` management endpoints (currently has model, no views)
-
-**Key validation rules:**
-- MFA required for all internal roles
-- Password min 12 chars, HIBP check before accept
-- Reuse blocked for last 12 passwords
-- Account locked after 5 failures (15 min cooldown)
-- Step-up auth for vault export, Board ratification, results publication
-
----
-
-### Phase 2 — NBEC Management Portal
-**SRS Ref**: NBE-F01 | **Status**: Scaffolded (empty models/views)
-
-**Apps affected**: `apps/committee/`
-
-**Models to implement:**
-```
-NBECMember       — full_name, title, designation, appointing_authority, instrument_ref (unique),
-                   tenure_start, tenure_end, status (draft/active/expired/renewed),
-                   conflict_declarations (FK to ConflictDeclaration)
-Meeting          — type (ordinary/extraordinary/closed), date, venue, quorum (default 5),
-                   chair_id, status (draft/agenda_issued/convened/adjourned/minuted)
-Agenda           — linked to Meeting, versioned, supporting papers
-MinutesRecord    — linked to Meeting, immutable after Chair approval, signed_pdf_ref
-ActionItem       — open/in_progress/completed/verified, owner_id, due_date, auto-escalate at +7 days
-ConflictDeclaration — member_id, subject_type, subject_id, nature, effective_date, approved (bool)
-```
-
-**Key business rules:**
-- Only one active Chair at any time
-- Approved minutes → immutable; changes require addendum
-- Active sessions revoked within 60 seconds of deactivation
-- Conflict declarations auto-exclude member from related item/marking/ratification queues
-- All meeting records archived to System 05 on Chair approval (via outbox event)
-
-**Key endpoints:**
-```
-POST   /api/v1/committee/members/
-PATCH  /api/v1/committee/members/{id}/
-POST   /api/v1/committee/meetings/
-POST   /api/v1/committee/meetings/{id}/convene/
-POST   /api/v1/committee/meetings/{id}/minutes/
-POST   /api/v1/committee/meetings/{id}/minutes/approve/
-POST   /api/v1/committee/conflicts/
-POST   /api/v1/committee/conflicts/{id}/decide/
-```
-
----
-
-### Phase 3 — Secure Item Authoring & Content Vault
-**SRS Ref**: NBE-F02, NBE-N01 | **Status**: Models implemented, services/views pending
-
-**Apps affected**: `apps/itembank/`
-
-**Models already implemented:**
-- `Item` — FSM workflow (draft → submitted → in_review → reviewed → revised → moderation_panel → approved → locked_for_use)
-- `ItemVersion` — full snapshot on every save
-- `ExamPaper` — per sitting/subject, blueprint validated flag
-- `ItemUsage` — tracks reuse across sittings
-
-**Services to implement:**
-```python
-# apps/itembank/services.py
-def submit_item(item_id, actor_auth) -> Item:
-    # Validate metadata, call item.submit(), record AuditEvent(ITEM_SUBMITTED)
-
-def assign_reviewer(item_id, reviewer_id, actor_auth) -> Item:
-    # Set reviewer_id, call item.assign_for_review(), audit
-
-def approve_item(item_id, actor_auth) -> Item:
-    # Check has_sufficient_panel_votes, call item.approve(), then item.lock(), audit
-
-def export_vault_items(paper_id, actor_auth) -> bytes:
-    # Multi-party authorisation check, decrypt via shared.vault, produce encrypted package, audit VAULT_READ
-```
-
-**Vault encryption pattern:**
-```python
-from shared.vault import encrypt_item, decrypt_item
-encrypted, nonce = encrypt_item(content_bytes)
-item.content_encrypted = encrypted
-item.vault_nonce = nonce
-item.content_hash = hashlib.sha256(content_bytes).hexdigest()
-```
-
-**Key validation rules:**
-- All mandatory metadata fields before submission
-- MCQ: exactly 1 correct answer (fix `has_valid_mcq_config` guard)
-- Media ≤ 25 MB, virus-scanned before storage
-- Vault export requires 2-of-N authorisation + step-up MFA
-- Every vault read logged with actor, timestamp, item_id
-
-**Additional models needed:**
-```
-ItemPanelVote    — item_id, panellist_id, vote (approve/reject), justification, voted_at
-ItemAnnotation   — item_id, reviewer_id, annotation_text, resolved (bool)
-```
-
----
-
-### Phase 4 — Sitting Configuration & Blueprint Engine
-**SRS Ref**: NBE-F03 | **Status**: Models implemented, services/views pending
-
-**Apps affected**: `apps/sitting/`
-
-**Models already implemented:**
-- `Sitting` — FSM draft/configured/locked/active/closed, T-30 auto-lock
-- `SubjectPaper` — 5 papers per sitting (§71), marks allocation
-- `Blueprint` — topic weights, cognitive level distribution, validated flag
-- `SittingLock` — audit record of T-30 lock events
-
-**Services to implement:**
-```python
-# apps/sitting/services.py
-def configure_sitting(ref, data, actor_auth) -> Sitting:
-    # Validate all 5 SubjectPapers configured, set status=configured, audit
-
-def validate_blueprint(sitting_ref, actor_auth) -> Blueprint:
-    # Check topic coverage, cognitive distribution, mark blueprint.validated=True, audit
-
-def lock_sitting(sitting_ref, override=False, reason="", actor_auth=None) -> Sitting:
-    # Set status=locked, create SittingLock, emit SittingLocked event
-```
-
-**Celery Beat task** (add to `apps/sitting/tasks.py`):
-```python
-@shared_task
-def auto_lock_t30():
-    """Run daily. Lock all sittings where sitting_date - today <= 30 days and status=configured."""
-```
-
-**Key validation rules:**
-- Exactly 5 `SubjectPaper` records per sitting (§71)
-- `ref` format: `^BAR-\d{4}-\d{2}$` (validated by `validate_sitting_ref`)
-- `pass_mark` must be set before any marking can proceed
-- After T-30 lock: no changes to sitting config, blueprint, or paper construction
-- Override requires `sitting:lock:override` permission + audit-logged reason
-
----
-
-### Phase 5 — Candidate Registration & Eligibility Gate
-**SRS Ref**: NBE-F04 | **Status**: Models implemented, services partially stubbed
-
-**Apps affected**: `apps/registration/`
-
-**Models already implemented:**
-- `Candidate` — eligibility_status, index_number (BAR-YYYY-CCCCC), disability_codes
-- `Registration` — FSM draft → pending_eligibility → pending_payment → registered → withdrawn
-- `EligibilityCheck` — NLEMS response log
-- `RegistrationSlip` — signed PDF + QR
-
-**Services to implement:**
-```python
-# apps/registration/services.py
-def submit_registration(candidate_id, sitting_ref, actor_auth) -> Registration:
-    # Create Registration, call registration.submit() → triggers check_eligibility_async
-
-def check_eligibility_nlems(registration_id) -> None:
-    # Call NLEMS via System 17 with 24h cache; set candidate.eligibility_status
-    # On eligible: registration.mark_eligible(); on blocked: registration.block(reason)
-
-def dg_override(candidate_id, justification, evidence_refs, actor_auth) -> Candidate:
-    # DG role + step-up MFA check; set eligibility_status=eligible_override; audit
-
-def generate_index_number(registration) -> str:
-    # Format BAR-YYYY-CCCCC with advisory lock + pre-allocated sequence per year
-    # Immutable once generated
-
-def generate_slip(registration) -> RegistrationSlip:
-    # Signed PDF with QR payload hash; store in MinIO; notify candidate
-```
-
-**NLEMS integration pattern:**
-```python
-# Call via System 17 — never call NLEMS directly
-from shared.events import publish
-# For sync checks: use requests + settings.NLEMS_URL + settings.NLEMS_API_KEY
-# For async: task calls NLEMS, updates registration, publishes event
-```
-
-**Key validation rules:**
-- Email + phone unique within the active sitting
-- Photo ≤ 5 MB, biometric quality pre-check (sharpness, face detection)
-- OTP: 6-digit, valid 10 min, max 5 attempts, rate-limited per phone/email/IP
-- Locked fields after submission: name, DOB, national_id, llb_id, lpt_cert_number
-- Withdrawal window: T-21 days (configurable); withdrawal does NOT increment attempt counter
-- Index number format: `^BAR-\d{4}-\d{5}$`; generated server-side only
-
----
-
-### Phase 6 — CBT Delivery (System 10B)
-**Scope**: Primarily System 10B — the nbes-backend receives candidate responses and attendance.
-
-**What this service handles:**
-- Ingest CBT responses from System 10B: `POST /api/v1/scripts/ingest/cbt/`
-- Ingest attendance: `POST /api/v1/registration/attendance/`
-- Seat allocation updates trigger slip re-issuance (via event)
-
----
-
-### Phase 7 — Identity Verification & Proctoring (System 10B)
-**Scope**: Primarily System 10B. This service stores proctoring incidents forwarded by 10B.
-
----
-
-### Phase 8 — Paper-Scan Failover & Accessibility (System 10B)
-**Scope**: This service receives digitised PBT scripts from System 10B for AI marking.
-
-**What this service handles:**
-- Ingest PBT scripts: `POST /api/v1/scripts/ingest/pbt/`
-- OCR quality gate (reject scripts below threshold → route to manual marking)
-
----
-
-### Phase 9 — AI-Assisted Marking & Mandatory Human Moderation
-**SRS Ref**: NBE-F05, NBE-N02 | **Status**: Models implemented, services/tasks pending
-
-**Apps affected**: `apps/marking/`
-
-**Models already implemented:**
-- `Script` — FSM received → ai_marking → ai_complete → borderline → moderation_complete → reconciliation → final_mark_locked
-- `MarkingDecision` — ai_mark, moderator_mark, second_mark, final_mark, audit_hash
-- `DoubleMarkSample` — 5% random sample
-
-**Additional models needed:**
-```
-ScriptScoring    — script_id, model_version, per_item_marks_json, aggregate_mark, confidence,
-                   evidence_highlights_ref, scored_at
-BorderlineFlag   — script_id, paper_id, ai_mark, pass_mark, distance_pct, flagged_at
-```
-
-**Services to implement:**
-```python
-# apps/marking/services.py
-def compute_borderline_flag(script) -> None:
-    # Read pass_mark from Sitting.SubjectPaper; compute distance_pct
-    # If abs(ai_mark - pass_mark) / pass_mark <= 0.05: set borderline_flagged=True
-
-def compute_audit_hash(script) -> str:
-    # SHA-256 over canonical JSON of: script content + rubric + ai_inputs + ai_outputs
-    # Store in marking_decision.audit_hash; commit to System 22 via outbox
-
-def check_reconciliation_needed(script) -> None:
-    # If abs(moderator_mark - ai_mark) > threshold (default 10%): set reconciliation_required=True
-
-def assign_moderator(script, eligible_pool) -> UUID:
-    # Round-robin from pool; exclude moderators with ConflictDeclaration against candidate
-```
-
-**Celery tasks in `apps/marking/tasks.py`:**
-```python
-@shared_task(queue="marking-high")
-def run_ai_scoring(script_id): ...
-
-@shared_task(queue="marking-high")
-def run_pre_publication_verification(sitting_ref):
-    # Re-verify every script hash in the sitting
-    # Any mismatch → block publication + critical alert to DG + Administrator
-```
-
-**Key validation rules:**
-- AI scoring is advisory only — never the final mark for borderline scripts
-- Models frozen per sitting; reject new model versions mid-sitting
-- Moderation adjustment requires justification ≥ 30 words
-- Moderators with COI on candidate: excluded server-side
-- Pre-publication verification: 100% of scripts must pass
-- Sampling rate: 1–20% (default 5%), stratified by score band
-
----
-
-### Phase 10 — Results, Re-Sit Management, Certificate Trigger & Go-Live
-**SRS Ref**: NBE-F06, NBE-F07, NBE-F08 | **Status**: Models implemented, services/views pending
-
-**Apps affected**: `apps/results/`, `apps/resit/`, `apps/cert_trigger/`, `apps/sla/`
-
-**Models already implemented (results):**
-- `ResultSet` — FSM drafted → normalised → board_review → board_ratified → ready_to_publish → published
-- `NormalisedResult` — per-candidate normalised marks + overall_outcome (pass/fail/withheld)
-- `RatificationRecord` — immutable after Chair signature
-- `RemarkRequest`
-
-**Services to implement:**
-
-```python
-# apps/results/services.py
-def run_normalisation(sitting_ref, method, actor_auth) -> ResultSet:
-    # Apply normalisation method (e.g. linear scaling) to all NormalisedResult rows
-    # Set result_set.normalisation_complete=True, call result_set.mark_normalised()
-
-def verify_hash_chain(result_set) -> None:
-    # Re-verify every script hash — raises if any mismatch → blocks publication
-
-def generate_result_pdfs(result_set) -> None:
-    # Produce signed PDF per candidate; store in MinIO; reference in NormalisedResult
-
-def publish_results(result_set, actor_auth) -> ResultSet:
-    # Step-up MFA required; calls result_set.publish(); emits ResultsPublished event
-    # Must complete within 21 days of sitting (SLA enforced by apps/sla/)
-```
-
-```python
-# apps/resit/services.py — §73 attempt counter
-def record_attempt(candidate_id, sitting_ref, papers) -> AttemptCounter:
-    # Increment counter on sitting attendance (not registration)
-    # Block if counter >= max_attempts AND no NBEC exception granted
-
-def grant_exception(candidate_id, nbec_decision, actor_auth) -> NBECException:
-    # NBEC Member role + step-up MFA; audit RESIT_EXCEPTION_GRANTED
-```
-
-```python
-# apps/cert_trigger/services.py — System 14 integration
-def trigger_certificate(candidate_id, sitting_ref, actor_auth) -> CertTrigger:
-    # Validate candidate outcome == PASS; call System 14 via System 17
-    # Must complete within 1 hour of results publication (SLA monitored by apps/sla/)
-    # Audit CERT_TRIGGERED
-```
-
-**SLA monitoring (apps/sla/):**
-- Celery Beat task runs every 15 minutes
-- Checks: (a) results published within 21 days of sitting; (b) cert trigger within 1 hour of publication
-- Breaches → critical alert to DG, CLET Registrar, and System Operator
-
----
-
-## 8. Integration Reference
-
-| System | Env Var | Pattern | What it does |
-|---|---|---|---|
-| **System 17** (API Layer) | `SYSTEM_17_URL` | Signed HTTP + replay protection | All outbound inter-system calls |
-| **System 22** (Audit) | via Kafka `nbes.audit` | Outbox → Kafka | Tamper-evident audit storage |
-| **NLEMS** (Eligibility) | `NLEMS_URL`, `NLEMS_API_KEY` | Sync REST via System 17 + 24h cache | LLB + LPT verification |
-| **System 20** (Payment) | `SYSTEM_20_WEBHOOK_SECRET` | Inbound webhook (HMAC verify) | Fee payment confirmation |
-| **System 14** (Certification) | via System 17 | Outbound REST + 1h SLA | Qualifying certificate trigger |
-| **System 21** (Communications) | `SYSTEM_21_URL`, `SYSTEM_21_API_KEY` | Outbound REST | Email + SMS notifications |
-| **System 10B** (CBT Engine) | via System 17 | Inbound REST | Script ingestion, attendance |
-
-**Outbound call pattern (via System 17):**
-```python
-# shared/integrations.py (to be created)
-def call_system_17(endpoint, payload, *, method="POST"):
-    # Add nonce + timestamp + HMAC signature
-    # Handle retry with exponential backoff
-    # Log correlation_id in AuditEvent
-```
-
----
-
-## 9. Celery Queue Reference
-
-| Queue | Workers | Purpose |
+| Queue | Worker | Phase 1 Tasks |
 |---|---|---|
-| `marking-high` | `worker-marking` | AI scoring, audit hash — exam-critical, highest priority |
-| `moderation` | `worker-general` | Borderline routing, reconciliation |
-| `results` | `worker-general` | Normalisation, hash verification, PDF generation |
-| `cert-trigger` | `worker-general` | System 14 webhook — 1-hour SLA |
-| `notifications` | `worker-general` | System 21 dispatch |
-| `sla-monitor` | `worker-sla` | SLA checking — every 15 minutes |
-| `vault-integrity` | `worker-sla` | Daily vault SHA-256 integrity check |
-| `outbox` | `worker-sla` | Outbox poller — every 5 seconds |
+| `sla-monitor` | `worker-sla` | `export_daily_hash_anchor` (01:00 UTC daily), `relay_outbox` (every 5s) |
+| `notifications` | `worker-general` | Invite emails, lockout notifications, password resets (via System 21) |
 
 Always specify the queue when defining tasks:
+
 ```python
-@shared_task(queue="marking-high", bind=True, max_retries=3)
-def run_ai_scoring(self, script_id): ...
+@shared_task(queue="sla-monitor", bind=True, max_retries=3)
+def export_daily_hash_anchor(self):
+    ...
 ```
+
+Later phases add `marking-high`, `moderation`, `results`, `cert-trigger`,
+`vault-integrity` — do not add them in Phase 1.
 
 ---
 
-## 10. Testing Strategy
+## 9. Coding Patterns — Adding a Phase 1 Feature
+
+When adding a Phase 1 capability (e.g. "implement bulk user import"):
+
+1. **Model** (`apps/users/models.py` or `apps/audit/models.py`) — add fields,
+   set `db_table`, add lifecycle field if needed.
+2. **Migration** — `python manage.py makemigrations <app>`.
+3. **Service** (`services.py`) — business logic; `@transaction.atomic`;
+   call `AuditEvent.record()`; call `publish()`; outbound work goes via
+   `shared.integrations.call_system_17`.
+4. **Serializer** (`serializers.py`) — input validation + representation.
+5. **View** (`views.py`) — `permission_classes = [IsAuthenticated, has_permission("users:manage")]`;
+   call service; return `success_response(data, status_code)`.
+6. **URL** (`urls.py`) — register the view.
+7. **Events** (`events.py`) — add the event name constant.
+8. **Tests** — model, service, view tests with role-correct JWTs.
+
+---
+
+## 10. Validation Rules — Phase 1 Specific
+
+- **Email**: uniqueness at the DB level; case-insensitive comparison.
+- **Password**: minimum 12 chars; mixed case + digits + special; HIBP check
+  before accept; reuse blocked for last 12 passwords.
+- **Account lockout**: 5 consecutive failures → 15-minute cooldown; user
+  notified by email.
+- **MFA factors**: TOTP (RFC 6238), WebAuthn / FIDO2 (preferred for internal
+  roles), SMS OTP (fallback only — never default).
+- **MFA cannot be self-disabled** for internal roles. Only an Administrator
+  can clear an MFA enrolment; the action is audited (`MFA_CLEARED_BY_ADMIN`)
+  and forces re-enrolment on next login.
+- **Mutually exclusive roles**: server-side rejection on assignment; the API
+  returns 400 with code `ROLE_MUTUAL_EXCLUSION_VIOLATION`.
+- **Two-Administrator approval**: required for NBEC Chair, DG, System
+  Administrator role assignments. Second approver ≠ requester (enforced
+  server-side, not just UI).
+- **Invite link**: single-use, 7-day expiry.
+- **Session revocation**: effective end-to-end within 60 seconds of role
+  revocation or account deactivation.
+- **403 responses**: generic message; specifics live only in the audit log.
+- **Audit retention**: 15 years (per NBE-N07).
+
+Cross-cutting validators already in `shared/validators.py`:
+`validate_sitting_ref`, `validate_index_number`, `validate_ghana_phone`.
+Phase 1 does not modify these.
+
+---
+
+## 11. Testing Strategy — Phase 1
 
 **Unit tests** (`tests/test_models.py`, `tests/test_services.py`):
-- Test FSM transitions: valid transitions succeed, invalid transitions raise `TransitionNotAllowed`
-- Test guard conditions with explicit fixture data
-- Test audit events are emitted on every state change
-- Test serializer validation (missing fields, wrong format, boundary values)
+- Audit chain hash continuity — given two consecutive events, the second
+  event's `prev_hash` equals the first event's `hash`.
+- `HasPermission` deny path emits an `AUTHZ_DENIED` audit event.
+- Brute-force counters increment correctly and reset after the window.
+- Two-Administrator approval rejects same-user approval.
 
 **Integration tests** (`tests/test_views.py`):
-- Use `APIClient` with a JWT in the correct role
-- Test 401 on missing/expired token
-- Test 403 on wrong role
-- Test standard envelope shape on success and error
-- Test FSM 400 on invalid transition
+- Use `APIClient` with a JWT in the correct role.
+- 401 on missing/expired token.
+- 403 on wrong role — with audit entry assertion.
+- Standard envelope shape on success and error.
+- 60-second session revocation: assign role → revoke → assert 403 on next
+  call (test uses time-travel rather than real sleep).
 
-**Test JWT helper pattern:**
+**Test JWT helper pattern** (place in `shared/test_utils.py`):
+
 ```python
 import jwt
 from django.conf import settings
 
-def make_jwt(role="nbec-member", sub="test-sub-uuid"):
+def make_jwt(role="nbec-member", sub="test-sub-uuid", jti=None):
     return jwt.encode(
-        {"sub": sub, "email": "test@example.com", "role": role, "roles": [role]},
-        settings.JWT_SECRET_KEY, algorithm="HS256"
+        {
+            "sub": sub,
+            "email": "test@example.com",
+            "role": role,
+            "roles": [role],
+            "jti": jti or "test-jti",
+        },
+        settings.JWT_SECRET_KEY, algorithm="HS256",
     )
 ```
 
-**Acceptance criteria (Given/When/Then)** — trace every test back to a SRS requirement ID
-(e.g. `# SRS-NBE-F02-01` in the docstring).
+**Acceptance criteria (Given/When/Then)** — trace every test back to a SRS
+requirement ID (e.g. `# SRS-REQ-F000-02` in the docstring).
 
 ---
 
-## 11. Coding Patterns: Adding a New Feature
-
-When adding a feature (e.g. "implement committee meeting creation"):
-
-1. **Model** (`models.py`): Add model, set `db_table`, add FSM field + transitions if needed.
-2. **Migration**: `python manage.py makemigrations <app>`.
-3. **Guards** (`workflow/guards.py`): Add guard functions for any FSM conditions.
-4. **Service** (`services.py`): Business logic. `@transaction.atomic`. Call `AuditEvent.record()`. Call `publish()`.
-5. **Serializer** (`serializers.py`): Input validation + nested representation.
-6. **View** (`views.py`): `permission_classes = [IsAuthenticated, has_permission("committee:manage")]`. Call service. Return `success_response(data, status_code)`.
-7. **URL** (`urls.py`): Register the view.
-8. **Events** (`events.py`): Add the event name constant (e.g. `MEETING_CONVENED = "MeetingConvened"`).
-9. **Tests**: Model, service, view tests with role-correct JWTs.
-
----
-
-## 12. Key Validation Rules (Cross-Cutting)
-
-- `sitting_ref`: `^BAR-\d{4}-\d{2}$` (e.g. BAR-2026-05)
-- `index_number`: `^BAR-\d{4}-\d{5}$` (e.g. BAR-2026-00001) — server-generated only
-- Ghana phone: `^(\+233|0)\d{9}$`
-- Justification text (moderation, override, exceptions): minimum 30 words enforced server-side
-- Tenure end > tenure start; only one active Chair
-- Items: all metadata required before `submit()` transition
-- MCQ: exactly one correct answer
-- Pass mark must be set before marking, borderline flagging, or normalisation can run
-- Withdrawal: T-21 cut-off; does not increment attempt counter
-- Vault export: multi-party authorisation + step-up MFA; every read audited
-- Pre-publication: 100% script hash verification required
-
----
-
-## 13. Risks and Open Questions
+## 12. Phase 1 Risks and Open Questions
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| NLEMS unavailability | Blocks all candidate registrations | 24h cache + async retry + DG override path |
-| Keycloak RS256 JWKS not implemented | Auth broken in production | Implement before any production deployment |
-| `has_sufficient_panel_votes` guard stubbed | Items can be approved without proper quorum | Implement `ItemPanelVote` model + guard |
-| Vault HSM integration not wired | Prod exam content at risk | `VAULT_DEV_MODE=False` path + PKCS11 untested |
-| AI scoring engine not connected | Phase 9 is blocked | Define AI service interface contract; mock first |
-| viewflow Board ratification commented out | Results publication is blocked | Uncomment + configure `viewflow` in settings |
-| `System 17` integration substrate not implemented | All inter-system calls will fail in prod | Implement `shared/integrations.py` first |
-| Multiple roles per user not supported | Single-role model may be too restrictive | Product decision required before Phase 2 ships |
-| Attempt counter logic for §73 | Legal compliance risk | Must be exact match to statute; get legal sign-off |
-| 21-day publication SLA | Statutory obligation | SLA monitor must be tested end-to-end before UAT |
+| Keycloak RS256 JWKS not implemented | Auth broken in production | Implement before any production deployment; gate on `KEYCLOAK_ENABLED` |
+| Audit emission blocks business actions on System 22 outage | Cascade failure across all features | Async emission + local-file fallback + replay on recovery |
+| Session revocation slower than 60s SLA | F000-02 acceptance fails | Redis JTI blocklist + check on every auth call |
+| HIBP availability for password check | Onboarding blocked | Cache HIBP responses; on outage, fall back to local breach list |
+| Multiple roles per user not supported | `request.auth["role"]` is single-valued | Product decision required before Phase 2 ships; Phase 1 data model already supports many-to-one `user_role` |
+| Two-Administrator approval bypass via concurrent requests | High-privilege escalation | DB unique constraint on (request_id, approver_id) and explicit check `approver_id ≠ requester_id` |
+| Brute-force counter race conditions | Throttle ineffective under load | Use Redis atomic INCR with TTL; do not implement in Python |
+| Daily hash anchor failure overnight | Tamper-evidence gap | Page on-call on first failure; second consecutive failure blocks all writes |
 
 ---
 
-## 14. Implementation Order
+## 13. Phase 1 Out of Scope — Do Not Build Here
 
-```
-Phase 1 (Auth substrate)  →  Phase 2 (Committee)  →  Phase 3 (Item vault)
-       ↓
-Phase 4 (Sitting config)  →  Phase 5 (Registration)  →  Phase 6-8 (CBT ingestion)
-       ↓
-Phase 9 (Marking)  →  Phase 10 (Results + Re-sit + Cert + Go-Live)
-```
+These belong to later phases. Adding them in Phase 1 expands the blast radius
+of any auth/RBAC change and slows the foundation.
 
-Dependencies:
-- Phase 2 requires Phase 1 (RBAC + audit)
-- Phase 3 requires Phase 2 (conflict declarations gate item review)
-- Phase 4 requires Phase 3 (blueprint uses item bank)
-- Phase 5 requires Phase 4 (registration references sitting)
-- Phase 9 requires Phase 4 (pass_mark from sitting) + Phase 5 (candidate records)
-- Phase 10 requires Phase 9 (final marks) + Phase 5 (candidate eligibility_override flag)
+- Committee / NBEC management (Phase 2 — `apps/committee/`)
+- Item bank, vault, peer review (Phase 3 — `apps/itembank/`)
+- Sitting configuration, blueprint, T-30 lock (Phase 4 — `apps/sitting/`)
+- Candidate registration, NLEMS gate, index numbers (Phase 5 — `apps/registration/`)
+- CBT response/attendance ingestion (Phase 6–8 — System 10B handoff)
+- AI scoring, moderation, reconciliation (Phase 9 — `apps/marking/`)
+- Results normalisation, ratification, publication (Phase 10 — `apps/results/`)
+- §73 attempt counter, NBEC exceptions (Phase 10 — `apps/resit/`)
+- Certificate trigger (Phase 10 — `apps/cert_trigger/`)
+- 21-day publication SLA, 1-hour cert SLA (Phase 10 — `apps/sla/` business logic)
 
-**Current priority**: Complete Phase 1 guard/service stubs → Phase 2 committee models →
-Phase 3 item vault services → Phase 4 sitting services → Phase 5 registration services.
+Phase 1 **does** ship the empty app skeletons (`models.py` placeholders,
+`urls.py` stubs) and the Role Dashboard Skeletons so the IA is stable — but
+not the features.
+
+---
+
+## 14. Reference
+
+- **Task-level breakdown**: `tasks.md` (sprint sequencing, acceptance criteria
+  per ticket, demo targets). This SKILL.md is the blueprint; tasks.md is the
+  to-do list.
+- **SRS requirement IDs**: REQ-F000-01 through REQ-F000-06.
+- **Legislative basis for the wider system**: §§65–73 Legal Practitioners Act
+  (Ghana). Phase 1 itself has no direct statutory clause — it is the
+  enabling substrate.
