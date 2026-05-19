@@ -69,6 +69,7 @@ class Role(models.Model):
     name = models.CharField(max_length=100, unique=True, db_index=True)
     description = models.CharField(max_length=255, blank=True)
     is_active = models.BooleanField(default=True)
+    is_custom = models.BooleanField(default=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

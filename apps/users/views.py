@@ -103,6 +103,17 @@ def _error_envelope(name):
     )
 
 
+def _error_response(code, message, status_code, request_id=""):
+    return Response(
+        {
+            "success": False,
+            "error": {"code": code, "message": message},
+            "meta": {"request_id": str(request_id)},
+        },
+        status=status_code,
+    )
+
+
 # ── permissions catalog (read-only) ──────────────────────────────────────────
 
 class PermissionListView(APIView):
@@ -198,8 +209,15 @@ class RoleListCreateView(APIView):
 
         role, created = Role.objects.get_or_create(
             name=d["name"],
-            defaults={"description": d.get("description", "")},
+            defaults={"description": d.get("description", ""), "is_custom": True},
         )
+        if not created and not role.is_custom:
+            return _error_response(
+                "ROLE_LOCKED",
+                "Seeded NBES roles cannot be updated or deleted.",
+                status.HTTP_403_FORBIDDEN,
+                getattr(request, "request_id", ""),
+            )
         if not created and d.get("description") and not role.description:
             role.description = d["description"]
             role.save(update_fields=["description", "updated_at"])
@@ -274,6 +292,13 @@ class RoleDetailView(APIView):
         role, err = self._get(pk)
         if err:
             return err
+        if not role.is_custom:
+            return _error_response(
+                "ROLE_LOCKED",
+                "Seeded NBES roles cannot be updated or deleted.",
+                status.HTTP_403_FORBIDDEN,
+                getattr(request, "request_id", ""),
+            )
 
         before = {"description": role.description, "is_active": role.is_active}
         if "description" in request.data:
@@ -308,6 +333,13 @@ class RoleDetailView(APIView):
         role, err = self._get(pk)
         if err:
             return err
+        if not role.is_custom:
+            return _error_response(
+                "ROLE_LOCKED",
+                "Seeded NBES roles cannot be updated or deleted.",
+                status.HTTP_403_FORBIDDEN,
+                getattr(request, "request_id", ""),
+            )
 
         if not role.is_active:
             return _envelope(
