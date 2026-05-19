@@ -5,7 +5,11 @@ emits an AuditEvent and invalidates the in-process role cache so the
 change takes effect within 60 s for every NBES node.
 """
 from django.db import transaction
-from drf_spectacular.utils import extend_schema, inline_serializer
+from drf_spectacular.utils import (
+    OpenApiExample,
+    extend_schema,
+    inline_serializer,
+)
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -454,6 +458,29 @@ class MyPermissionsView(APIView):
     Useful for clients to hide buttons before the API rejects them. The
     list reflects the *resolved* permissions after intersecting JWT roles
     with NBES's role registry — i.e. the same set the gateway enforces.
+
+    **Role resolution (post-migration architecture):**
+
+    1. NBES reads ``resource_access[<NBES_CLIENT_ID>].roles`` from the JWT —
+       the Keycloak *client roles* IAM assigns when the user is invited /
+       activated into NBES. ``NBES_CLIENT_ID`` defaults to ``nbes-api``.
+    2. If that claim is absent (legacy tokens issued before IAM cut over),
+       NBES falls back to ``realm_access.roles`` and emits a structured
+       warning ``rbac.legacy_realm_role_fallback`` so the fallback usage is
+       observable. The fallback will be removed in IAM Phase 7.
+    3. ``super_admin`` in ``realm_access.roles`` short-circuits to the
+       wildcard sentinel ``*``. This realm role stays a realm role; every
+       other system role becomes a client role.
+
+    **Audience verification.** Tokens for NBES must list ``nbes-api`` in
+    ``aud`` (the ``audience-resolve`` mapper on ``clet-iam-internal``
+    populates this automatically when the user holds NBES client roles).
+    Production NBES (``prod.py``) fails closed at boot if
+    ``KEYCLOAK_VALID_AUDIENCES`` is empty or missing ``nbes-api``.
+
+    The ``roles_in_jwt`` field in the response reflects whichever source
+    the resolver actually used — so an empty ``resource_access`` block on a
+    legacy token will surface here as the realm-role names.
     """
     permission_classes = [IsAuthenticated]
 
@@ -461,6 +488,18 @@ class MyPermissionsView(APIView):
         tags=["Current User"],
         summary="Get current user's resolved NBES permissions",
         operation_id="current_user_permissions",
+        description=(
+            "Returns the resolved NBES permission set for the bearer of "
+            "the JWT.\n\n"
+            "**Resolution order:**\n"
+            "1. `resource_access[nbes-api].roles` — Keycloak client roles "
+            "(target architecture).\n"
+            "2. `realm_access.roles` — legacy fallback; logged for "
+            "migration tracking.\n"
+            "3. `super_admin` in `realm_access.roles` → wildcard `*`.\n\n"
+            "**Audience:** the token's `aud` claim must include the value "
+            "of `NBES_CLIENT_ID` (default `nbes-api`)."
+        ),
         responses={
             200: _success_envelope(
                 "MyPermissionsResponse",
@@ -476,6 +515,69 @@ class MyPermissionsView(APIView):
             ),
             401: _error_envelope("MyPermissionsUnauthorizedError"),
         },
+        examples=[
+            OpenApiExample(
+                name="Examiner — client-role path (target)",
+                description=(
+                    "User has `nbes-api/examiner` as a Keycloak client role. "
+                    "Token's `resource_access['nbes-api'].roles` includes "
+                    "`examiner`. NBES resolves `examiner` against its local "
+                    "RolePermission table."
+                ),
+                value={
+                    "success": True,
+                    "data": {
+                        "sub": "11111111-1111-1111-1111-111111111111",
+                        "email": "examiner@example.com",
+                        "roles_in_jwt": ["examiner"],
+                        "roles_recognised_by_nbes": ["examiner"],
+                        "permissions": [
+                            "marking:moderate",
+                            "marking:score"
+                        ],
+                    },
+                    "meta": {"request_id": "0e1e..."},
+                },
+            ),
+            OpenApiExample(
+                name="Super admin — realm-role wildcard",
+                description=(
+                    "`super_admin` in `realm_access.roles` short-circuits "
+                    "to wildcard. Token does not need `resource_access[nbes-api]`."
+                ),
+                value={
+                    "success": True,
+                    "data": {
+                        "sub": "22222222-2222-2222-2222-222222222222",
+                        "email": "root@example.com",
+                        "roles_in_jwt": [],
+                        "roles_recognised_by_nbes": [],
+                        "permissions": ["*"],
+                    },
+                    "meta": {"request_id": "..."},
+                },
+            ),
+            OpenApiExample(
+                name="Legacy fallback — pre-migration token",
+                description=(
+                    "Token carries `realm_access.roles=['examiner']` but no "
+                    "`resource_access[nbes-api]`. NBES still resolves it via "
+                    "the realm-role fallback path AND emits "
+                    "`rbac.legacy_realm_role_fallback` to logs."
+                ),
+                value={
+                    "success": True,
+                    "data": {
+                        "sub": "33333333-3333-3333-3333-333333333333",
+                        "email": "legacy@example.com",
+                        "roles_in_jwt": ["examiner"],
+                        "roles_recognised_by_nbes": ["examiner"],
+                        "permissions": ["marking:moderate", "marking:score"],
+                    },
+                    "meta": {"request_id": "..."},
+                },
+            ),
+        ],
     )
     def get(self, request):
         payload = request.auth or {}
