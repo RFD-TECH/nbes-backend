@@ -9,7 +9,7 @@ psycopg2-binary
 
 # ── Workflow ──────────────────────────────────────────────────────────────────
 django-fsm           # FSM state machines on all status fields
-viewflow             # Open-source viewflow — Board ratification & vault export flows
+django-viewflow      # Open-source viewflow — Board ratification & vault export flows
 
 # ── Background Tasks ─────────────────────────────────────────────────────────
 celery
