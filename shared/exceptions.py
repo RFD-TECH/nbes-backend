@@ -75,9 +75,7 @@ def nbes_exception_handler(exc, context):
     if response is not None:
         error_code = _get_error_code(response.status_code)
         error_detail = (
-            response.data.copy()
-            if isinstance(response.data, dict)
-            else response.data
+            response.data.copy() if isinstance(response.data, dict) else response.data
         )
 
         # Separate field-level errors from top-level messages
@@ -121,3 +119,42 @@ def _get_error_code(status_code: int) -> str:
         429: "RATE_LIMITED",
         500: "SERVER_ERROR",
     }.get(status_code, "ERROR")
+
+
+def success_response(
+    data=None, message="Success", status_code=status.HTTP_200_OK, meta=None
+):
+    """
+    Standard NBES success envelope.
+    Usage: return success_response(data={"item_id": 123}, status_code=201)
+    """
+    response_data = {
+        "success": True,
+        "message": message,
+        "data": data if data is not None else {},
+        "meta": meta if meta is not None else {},
+    }
+    return Response(response_data, status=status_code)
+
+
+def error_response(
+    message,
+    code="ERROR",
+    errors=None,
+    status_code=status.HTTP_400_BAD_REQUEST,
+    meta=None,
+):
+    """
+    Standard NBES error envelope for manual error triggers (bypassing the exception handler).
+    Usage: return error_response("Invalid file", code="INVALID_FORMAT")
+    """
+    error_payload = {"code": code, "message": message}
+    if errors:
+        error_payload["fields"] = errors
+
+    response_data = {
+        "success": False,
+        "error": error_payload,
+        "meta": meta if meta is not None else {},
+    }
+    return Response(response_data, status=status_code)
