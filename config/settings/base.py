@@ -139,6 +139,33 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
+SPECTACULAR_SETTINGS = {
+    "TITLE": "National Bar Examination System API",
+    "DESCRIPTION": (
+        "REST API for NBES System 10A. Protected endpoints use Bearer JWTs "
+        "issued by IAM/Keycloak in production or HS256 development tokens in local mode."
+    ),
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SCHEMA_PATH_PREFIX": r"/api/v1",
+    "COMPONENT_SPLIT_REQUEST": True,
+    "APPEND_COMPONENTS": {
+        "securitySchemes": {
+            "BearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+                "description": "JWT access token. Use: Authorization: Bearer <token>.",
+            },
+        },
+    },
+    "SECURITY": [{"BearerAuth": []}],
+    "TAGS": [
+        {"name": "RBAC Admin", "description": "Manage NBES role and permission mapping."},
+        {"name": "Current User", "description": "Inspect the current user's NBES permissions."},
+    ],
+}
+
 # ── CORS ──────────────────────────────────────────────────────────────────────
 CORS_ALLOWED_ORIGINS = os.environ.get(
     "CORS_ALLOWED_ORIGINS", "http://localhost:3000"
