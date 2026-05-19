@@ -1,3 +1,497 @@
-﻿# apps/users/views.py
-# UserProfile - thin local profile keyed on Keycloak sub UUID
-# TODO: Implement
+"""apps/users/views.py — NBES RBAC admin endpoints.
+All endpoints require an authenticated user with the ``rbac:manage``
+permission (held by ``system-administrator`` per the seed). Every mutation
+emits an AuditEvent and invalidates the in-process role cache so the
+change takes effect within 60 s for every NBES node.
+"""
+from django.db import transaction
+from drf_spectacular.utils import extend_schema, inline_serializer
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import serializers
+from rest_framework.views import APIView
+from apps.audit.models import AuditEvent
+from shared import rbac
+from shared.permissions import has_permission
+
+from .models import Permission, Role, RolePermission
+from .serializers import (
+    CreateRoleSerializer,
+    PermissionSerializer,
+    RoleSerializer,
+    UpdateRolePermissionsSerializer,
+)
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def _envelope(data, status_code=status.HTTP_200_OK, request_id=""):
+    """NBES success envelope. Errors go through shared.exceptions handler."""
+    return Response(
+        {"success": True, "data": data, "meta": {"request_id": str(request_id)}},
+        status=status_code,
+    )
+
+
+def _actor_id(request):
+    return (request.auth or {}).get("sub") or None
+
+
+def _audit(request, action, entity_id=None, new_state=None, old_state=None):
+    AuditEvent.record(
+        actor_id=_actor_id(request),
+        action=action,
+        entity_type="rbac",
+        entity_id=entity_id,
+        old_state=old_state,
+        new_state=new_state,
+        request_id=getattr(request, "request_id", None),
+        ip_address=getattr(request, "ip_address", None),
+    )
+
+
+def _success_envelope(name, data_fields):
+    return inline_serializer(
+        name=name,
+        fields={
+            "success": serializers.BooleanField(default=True),
+            "data": inline_serializer(name=f"{name}Data", fields=data_fields),
+            "meta": inline_serializer(
+                name=f"{name}Meta",
+                fields={"request_id": serializers.CharField()},
+            ),
+        },
+    )
+
+
+def _success_envelope_with_serializer(name, data_serializer):
+    return inline_serializer(
+        name=name,
+        fields={
+            "success": serializers.BooleanField(default=True),
+            "data": data_serializer,
+            "meta": inline_serializer(
+                name=f"{name}Meta",
+                fields={"request_id": serializers.CharField()},
+            ),
+        },
+    )
+
+
+def _error_envelope(name):
+    return inline_serializer(
+        name=name,
+        fields={
+            "success": serializers.BooleanField(default=False),
+            "error": inline_serializer(
+                name=f"{name}Error",
+                fields={
+                    "code": serializers.CharField(),
+                    "message": serializers.CharField(),
+                },
+            ),
+            "meta": inline_serializer(
+                name=f"{name}Meta",
+                fields={"request_id": serializers.CharField()},
+            ),
+        },
+    )
+
+
+# ── permissions catalog (read-only) ──────────────────────────────────────────
+
+class PermissionListView(APIView):
+    """``GET /api/v1/admin/rbac/permissions`` — list seeded codenames.
+
+    Read-only: codenames are declared in code, never invented at runtime.
+    """
+    authentication_classes_setting = None  # use DRF default
+    permission_classes = [IsAuthenticated, has_permission("rbac:manage")]
+
+    @extend_schema(
+        tags=["RBAC Admin"],
+        summary="List NBES permission codenames",
+        operation_id="rbac_permission_list",
+        description="Returns the seeded permission catalog. Codenames are declared in code.",
+        responses={
+            200: _success_envelope(
+                "PermissionListResponse",
+                {
+                    "count": serializers.IntegerField(),
+                    "permissions": PermissionSerializer(many=True),
+                },
+            ),
+            401: _error_envelope("UnauthorizedError"),
+            403: _error_envelope("ForbiddenError"),
+        },
+    )
+    def get(self, request):
+        data = PermissionSerializer(
+            Permission.objects.all().order_by("codename"), many=True
+        ).data
+        return _envelope(
+            {"count": len(data), "permissions": data},
+            request_id=getattr(request, "request_id", ""),
+        )
+
+
+# ── role registry (mirror of IAM roles NBES recognises) ─────────────────────
+
+class RoleListCreateView(APIView):
+    """``GET /api/v1/admin/rbac/roles`` — list registered roles.
+
+    ``POST /api/v1/admin/rbac/roles`` — register an IAM role name so NBES
+    starts recognising it. Does NOT create the role in Keycloak; that
+    happens in IAM. NBES will only resolve permissions for roles whose
+    names are in this table.
+    """
+    permission_classes = [IsAuthenticated, has_permission("rbac:manage")]
+
+    @extend_schema(
+        tags=["RBAC Admin"],
+        summary="List NBES-recognised roles",
+        operation_id="rbac_role_list",
+        responses={
+            200: _success_envelope(
+                "RoleListResponse",
+                {
+                    "count": serializers.IntegerField(),
+                    "roles": RoleSerializer(many=True),
+                },
+            ),
+            401: _error_envelope("RoleListUnauthorizedError"),
+            403: _error_envelope("RoleListForbiddenError"),
+        },
+    )
+    def get(self, request):
+        data = RoleSerializer(
+            Role.objects.all().order_by("name"), many=True
+        ).data
+        return _envelope(
+            {"count": len(data), "roles": data},
+            request_id=getattr(request, "request_id", ""),
+        )
+
+    @extend_schema(
+        tags=["RBAC Admin"],
+        summary="Register an IAM role in NBES",
+        operation_id="rbac_role_create",
+        description="Creates or updates the local NBES role registry entry. It does not create the role in Keycloak.",
+        request=CreateRoleSerializer,
+        responses={
+            200: _success_envelope_with_serializer("RoleUpdatedResponse", RoleSerializer()),
+            201: _success_envelope_with_serializer("RoleCreatedResponse", RoleSerializer()),
+            400: _error_envelope("CreateRoleValidationError"),
+            401: _error_envelope("CreateRoleUnauthorizedError"),
+            403: _error_envelope("CreateRoleForbiddenError"),
+        },
+    )
+    def post(self, request):
+        serializer = CreateRoleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        d = serializer.validated_data
+
+        role, created = Role.objects.get_or_create(
+            name=d["name"],
+            defaults={"description": d.get("description", "")},
+        )
+        if not created and d.get("description") and not role.description:
+            role.description = d["description"]
+            role.save(update_fields=["description", "updated_at"])
+
+        _audit(
+            request,
+            action="RBAC_ROLE_REGISTERED" if created else "RBAC_ROLE_UPDATED",
+            entity_id=role.id,
+            new_state={"name": role.name, "description": role.description},
+        )
+        return _envelope(
+            RoleSerializer(role).data,
+            status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+            request_id=getattr(request, "request_id", ""),
+        )
+
+
+class RoleDetailView(APIView):
+    """``GET/PATCH/DELETE /api/v1/admin/rbac/roles/{id}``.
+
+    DELETE only deactivates (``is_active=False``) so historical audit rows
+    keep referring to a real role. The local cache is invalidated so
+    revocations take effect within 60 s.
+    """
+    permission_classes = [IsAuthenticated, has_permission("rbac:manage")]
+
+    def _get(self, pk):
+        try:
+            return Role.objects.get(id=pk), None
+        except Role.DoesNotExist:
+            return None, Response(
+                {
+                    "success": False,
+                    "error": {"code": "NOT_FOUND", "message": "Role not found."},
+                    "meta": {},
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+    @extend_schema(
+        tags=["RBAC Admin"],
+        summary="Get a role",
+        operation_id="rbac_role_retrieve",
+        responses={
+            200: _success_envelope_with_serializer("RoleDetailResponse", RoleSerializer()),
+            404: _error_envelope("RoleNotFoundError"),
+        },
+    )
+    def get(self, request, pk):
+        role, err = self._get(pk)
+        if err:
+            return err
+        return _envelope(RoleSerializer(role).data, request_id=getattr(request, "request_id", ""))
+
+    @extend_schema(
+        tags=["RBAC Admin"],
+        summary="Update a role",
+        operation_id="rbac_role_update",
+        request=inline_serializer(
+            name="RolePatchRequest",
+            fields={
+                "description": serializers.CharField(required=False, allow_blank=True),
+                "is_active": serializers.BooleanField(required=False),
+            },
+        ),
+        responses={
+            200: _success_envelope_with_serializer("RolePatchResponse", RoleSerializer()),
+            404: _error_envelope("RolePatchNotFoundError"),
+        },
+    )
+    def patch(self, request, pk):
+        role, err = self._get(pk)
+        if err:
+            return err
+
+        before = {"description": role.description, "is_active": role.is_active}
+        if "description" in request.data:
+            role.description = request.data["description"]
+        if "is_active" in request.data:
+            role.is_active = bool(request.data["is_active"])
+        role.save(update_fields=["description", "is_active", "updated_at"])
+        rbac.invalidate_role(role.name)
+
+        _audit(
+            request,
+            action="RBAC_ROLE_UPDATED",
+            entity_id=role.id,
+            old_state=before,
+            new_state={"description": role.description, "is_active": role.is_active},
+        )
+        return _envelope(RoleSerializer(role).data, request_id=getattr(request, "request_id", ""))
+
+    @extend_schema(
+        tags=["RBAC Admin"],
+        summary="Deactivate a role",
+        operation_id="rbac_role_deactivate",
+        responses={
+            200: _success_envelope_with_serializer(
+                "RoleDeactivateResponse",
+                RoleSerializer(),
+            ),
+            404: _error_envelope("RoleDeactivateNotFoundError"),
+        },
+    )
+    def delete(self, request, pk):
+        role, err = self._get(pk)
+        if err:
+            return err
+
+        if not role.is_active:
+            return _envelope(
+                {"detail": "Role is already inactive."},
+                request_id=getattr(request, "request_id", ""),
+            )
+
+        role.is_active = False
+        role.save(update_fields=["is_active", "updated_at"])
+        rbac.invalidate_role(role.name)
+
+        _audit(
+            request,
+            action="RBAC_ROLE_DEACTIVATED",
+            entity_id=role.id,
+            old_state={"is_active": True},
+            new_state={"is_active": False},
+        )
+        return _envelope(RoleSerializer(role).data, request_id=getattr(request, "request_id", ""))
+
+
+# ── role ↔ permission matrix (the editable bit) ─────────────────────────────
+
+class RolePermissionsView(APIView):
+    """``GET /api/v1/admin/rbac/roles/{id}/permissions`` — current grants.
+
+    ``PUT /api/v1/admin/rbac/roles/{id}/permissions`` — replace with the
+    given set. Computes additions/removals, persists in one transaction,
+    invalidates the role cache.
+    """
+    permission_classes = [IsAuthenticated, has_permission("rbac:manage")]
+
+    @extend_schema(
+        tags=["RBAC Admin"],
+        summary="Get role permission grants",
+        operation_id="rbac_role_permissions_retrieve",
+        responses={
+            200: _success_envelope(
+                "RolePermissionsResponse",
+                {
+                    "role_id": serializers.UUIDField(),
+                    "role_name": serializers.CharField(),
+                    "permissions": serializers.ListField(child=serializers.CharField()),
+                },
+            ),
+            404: _error_envelope("RolePermissionsNotFoundError"),
+        },
+    )
+    def get(self, request, pk):
+        try:
+            role = Role.objects.get(id=pk)
+        except Role.DoesNotExist:
+            return Response(
+                {
+                    "success": False,
+                    "error": {"code": "NOT_FOUND", "message": "Role not found."},
+                    "meta": {},
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        codenames = sorted(
+            role.grants.values_list("permission__codename", flat=True)
+        )
+        return _envelope(
+            {"role_id": str(role.id), "role_name": role.name, "permissions": codenames},
+            request_id=getattr(request, "request_id", ""),
+        )
+
+    @extend_schema(
+        tags=["RBAC Admin"],
+        summary="Replace role permission grants",
+        operation_id="rbac_role_permissions_update",
+        request=UpdateRolePermissionsSerializer,
+        responses={
+            200: _success_envelope(
+                "RolePermissionsUpdateResponse",
+                {
+                    "role_id": serializers.UUIDField(),
+                    "role_name": serializers.CharField(),
+                    "permissions": serializers.ListField(child=serializers.CharField()),
+                    "added": serializers.ListField(child=serializers.CharField()),
+                    "removed": serializers.ListField(child=serializers.CharField()),
+                },
+            ),
+            400: _error_envelope("RolePermissionsValidationError"),
+            404: _error_envelope("RolePermissionsUpdateNotFoundError"),
+        },
+    )
+    def put(self, request, pk):
+        try:
+            role = Role.objects.get(id=pk)
+        except Role.DoesNotExist:
+            return Response(
+                {
+                    "success": False,
+                    "error": {"code": "NOT_FOUND", "message": "Role not found."},
+                    "meta": {},
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = UpdateRolePermissionsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        desired = set(serializer.validated_data["codenames"])
+
+        with transaction.atomic():
+            current = set(role.grants.values_list("permission__codename", flat=True))
+            to_remove = current - desired
+            to_add = desired - current
+
+            if to_remove:
+                role.grants.filter(permission__codename__in=to_remove).delete()
+            if to_add:
+                permissions = Permission.objects.filter(codename__in=to_add)
+                RolePermission.objects.bulk_create(
+                    [
+                        RolePermission(role=role, permission=p, granted_by=_actor_id(request))
+                        for p in permissions
+                    ]
+                )
+
+        rbac.invalidate_role(role.name)
+        _audit(
+            request,
+            action="RBAC_ROLE_PERMISSIONS_UPDATED",
+            entity_id=role.id,
+            old_state={"permissions": sorted(current)},
+            new_state={"permissions": sorted(desired)},
+        )
+
+        return _envelope(
+            {
+                "role_id": str(role.id),
+                "role_name": role.name,
+                "permissions": sorted(desired),
+                "added": sorted(to_add),
+                "removed": sorted(to_remove),
+            },
+            request_id=getattr(request, "request_id", ""),
+        )
+
+
+# ── current-user introspection ──────────────────────────────────────────────
+
+class MyPermissionsView(APIView):
+    """``GET /api/v1/me/permissions`` — what NBES thinks the current user can do.
+
+    Useful for clients to hide buttons before the API rejects them. The
+    list reflects the *resolved* permissions after intersecting JWT roles
+    with NBES's role registry — i.e. the same set the gateway enforces.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=["Current User"],
+        summary="Get current user's resolved NBES permissions",
+        operation_id="current_user_permissions",
+        responses={
+            200: _success_envelope(
+                "MyPermissionsResponse",
+                {
+                    "sub": serializers.CharField(allow_blank=True, required=False),
+                    "email": serializers.EmailField(allow_blank=True, required=False),
+                    "roles_in_jwt": serializers.ListField(child=serializers.CharField()),
+                    "roles_recognised_by_nbes": serializers.ListField(
+                        child=serializers.CharField()
+                    ),
+                    "permissions": serializers.ListField(child=serializers.CharField()),
+                },
+            ),
+            401: _error_envelope("MyPermissionsUnauthorizedError"),
+        },
+    )
+    def get(self, request):
+        payload = request.auth or {}
+        jwt_roles = rbac.get_nbes_role_names(payload)
+        known_roles = sorted(
+            Role.objects.filter(name__in=jwt_roles, is_active=True)
+            .values_list("name", flat=True)
+        )
+        permissions = sorted(rbac.permissions_for(payload))
+        return _envelope(
+            {
+                "sub": payload.get("sub"),
+                "email": payload.get("email"),
+                "roles_in_jwt": jwt_roles,
+                "roles_recognised_by_nbes": known_roles,
+                "permissions": permissions,
+            },
+            request_id=getattr(request, "request_id", ""),
+        )

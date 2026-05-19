@@ -1,0 +1,426 @@
+{
+	"info": {
+		"_postman_id": "b1f9d3aa-7a8b-4c41-9c45-7b6cfaba0001",
+		"name": "NBES — RBAC Admin (Sprint 1.2)",
+		"description": "End-to-end test suite for the NBES Roles, Permissions & RBAC Gateway.\n\n## Setup\n\n1. Start NBES locally: `./venv/bin/python manage.py migrate && ./venv/bin/python manage.py runserver 8003`.\n2. Generate a dev admin token (HS256, signed with `JWT_SECRET_KEY` from `.env`). Paste the output into the `admin_token` collection variable.\n   ```bash\n   ./venv/bin/python -c \"\nimport jwt, datetime, uuid\nimport os, django\nos.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.dev')\ndjango.setup()\nfrom django.conf import settings\nprint(jwt.encode({\n    'sub': str(uuid.uuid4()),\n    'email': 'admin@nbes.test',\n    'realm_access': {'roles': ['system-administrator']},\n    'exp': int((datetime.datetime.utcnow() + datetime.timedelta(hours=24)).timestamp()),\n}, settings.JWT_SECRET_KEY, algorithm='HS256'))\"\n   ```\n3. Generate a non-admin token the same way, swap the role to `item-writer`. Paste into `writer_token`.\n4. Run the requests in order. `Create role` writes `role_id` into the collection; subsequent requests reuse it.\n\n## Notes\n\n- Production uses RS256 Keycloak tokens. This collection targets the dev shared-secret path. The endpoints are identical.\n- Every mutation emits an `AuditEvent` row. Every 403 emits `AUTHZ_DENIED`. Inspect via Django admin or `apps/audit`.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{ "key": "token", "value": "{{admin_token}}", "type": "string" }
+		]
+	},
+	"variable": [
+		{ "key": "base_url",        "value": "http://localhost:8003",                              "type": "string" },
+		{ "key": "admin_token",     "value": "PASTE_ADMIN_JWT_HERE",                               "type": "string" },
+		{ "key": "writer_token",    "value": "PASTE_NON_ADMIN_JWT_HERE",                          "type": "string" },
+		{ "key": "role_id",         "value": "",                                                  "type": "string" },
+		{ "key": "new_role_name",   "value": "external-reviewer",                                 "type": "string" }
+	],
+	"item": [
+		{
+			"name": "0 · Health & Introspection",
+			"item": [
+				{
+					"name": "My permissions (admin)",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/v1/me/permissions/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "me", "permissions", ""]
+						},
+						"description": "Returns what NBES thinks the bearer can do. `roles_in_jwt` is straight from the token; `roles_recognised_by_nbes` is the subset that maps to an active `Role` row; `permissions` is the resolved set the gateway enforces.\n\nUse this to confirm the admin token works before running any mutation."
+					},
+					"response": [
+						{
+							"name": "200 OK — admin token",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/api/v1/me/permissions/" }
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"sub\": \"4b1f2e91-0e85-4f63-9b6a-2eaa6d2f0001\",\n    \"email\": \"admin@nbes.test\",\n    \"roles_in_jwt\": [\"system-administrator\"],\n    \"roles_recognised_by_nbes\": [\"system-administrator\"],\n    \"permissions\": [\"rbac:manage\"]\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "1 · Permission catalog (read-only)",
+			"item": [
+				{
+					"name": "List permissions",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/permissions/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "admin", "rbac", "permissions", ""]
+						},
+						"description": "Lists every codename NBES enforces. Seeded from `apps/users/migrations/0001_initial.py`. Codenames are declared in code (`HasPermission(...)`) and cannot be added via the API — that's by design."
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"originalRequest": {
+								"method": "GET",
+								"url": { "raw": "{{base_url}}/api/v1/admin/rbac/permissions/" }
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"count\": 21,\n    \"permissions\": [\n      {\"id\": \"01b6...\", \"codename\": \"audit:export\",        \"description\": \"Export audit trail\",        \"created_at\": \"2026-05-19T10:00:00Z\"},\n      {\"id\": \"02c1...\", \"codename\": \"cert:trigger\",        \"description\": \"Trigger certificate issuance\", \"created_at\": \"2026-05-19T10:00:00Z\"},\n      {\"id\": \"03d2...\", \"codename\": \"committee:manage\",    \"description\": \"Manage committee operations\", \"created_at\": \"2026-05-19T10:00:00Z\"},\n      {\"id\": \"04e3...\", \"codename\": \"item:approve\",        \"description\": \"Approve items into the bank\",  \"created_at\": \"2026-05-19T10:00:00Z\"},\n      {\"id\": \"05f4...\", \"codename\": \"item:create\",         \"description\": \"Author exam items\",           \"created_at\": \"2026-05-19T10:00:00Z\"},\n      {\"id\": \"06aa...\", \"codename\": \"rbac:manage\",         \"description\": \"Manage NBES role-permission matrix\", \"created_at\": \"2026-05-19T10:00:00Z\"}\n    ]\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "2 · Role registry",
+			"item": [
+				{
+					"name": "List roles",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/roles/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "admin", "rbac", "roles", ""]
+						},
+						"description": "Lists every role NBES recognises (mirror of IAM role names NBES has been told about). Includes the codenames granted to each."
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"count\": 9,\n    \"roles\": [\n      {\"id\": \"aaa1...\", \"name\": \"auditor\",              \"description\": \"Auditor\",                  \"is_active\": true, \"permissions\": [\"audit:export\"],                       \"created_at\": \"2026-05-19T10:00:00Z\"},\n      {\"id\": \"bbb2...\", \"name\": \"candidate\",            \"description\": \"Candidate\",                \"is_active\": true, \"permissions\": [\"registration:self\", \"resit:register\", \"results:view:own\"], \"created_at\": \"2026-05-19T10:00:00Z\"},\n      {\"id\": \"ccc3...\", \"name\": \"clet-registrar\",       \"description\": \"CLET Registrar\",           \"is_active\": true, \"permissions\": [\"cert:trigger\", \"registration:eligibility:override\", \"results:publish:approve\", \"sla:view\"], \"created_at\": \"2026-05-19T10:00:00Z\"},\n      {\"id\": \"ddd4...\", \"name\": \"examiner\",             \"description\": \"Examiner\",                 \"is_active\": true, \"permissions\": [\"marking:second_mark\"],                  \"created_at\": \"2026-05-19T10:00:00Z\"},\n      {\"id\": \"eee5...\", \"name\": \"item-writer\",          \"description\": \"Item Writer\",              \"is_active\": true, \"permissions\": [\"item:create\"],                         \"created_at\": \"2026-05-19T10:00:00Z\"},\n      {\"id\": \"fff6...\", \"name\": \"moderator\",            \"description\": \"Moderator\",                \"is_active\": true, \"permissions\": [\"item:approve\", \"marking:moderate\"],      \"created_at\": \"2026-05-19T10:00:00Z\"},\n      {\"id\": \"aab7...\", \"name\": \"nbec-member\",          \"description\": \"NBEC Member\",              \"is_active\": true, \"permissions\": [\"audit:export\", \"committee:manage\", \"item:approve\", \"item:vault:export\", \"marking:arbitrate\", \"reporting:view\", \"resit:exception:grant\", \"results:ratify\", \"sitting:configure\", \"sitting:lock:override\", \"sla:view\"], \"created_at\": \"2026-05-19T10:00:00Z\"},\n      {\"id\": \"bbc8...\", \"name\": \"nbec-secretariat\",     \"description\": \"NBEC Secretariat\",         \"is_active\": true, \"permissions\": [\"committee:manage\", \"reporting:view\", \"sla:view\"],   \"created_at\": \"2026-05-19T10:00:00Z\"},\n      {\"id\": \"ccd9...\", \"name\": \"system-administrator\", \"description\": \"NBES System Administrator\", \"is_active\": true, \"permissions\": [\"rbac:manage\"],                                  \"created_at\": \"2026-05-19T10:00:00Z\"}\n    ]\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				},
+				{
+					"name": "Register role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"// Save the new role id for later requests in this run.",
+									"const res = pm.response.json();",
+									"if (res && res.data && res.data.id) {",
+									"  pm.collectionVariables.set('role_id', res.data.id);",
+									"  console.log('Saved role_id =', res.data.id);",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/roles/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "admin", "rbac", "roles", ""]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"{{new_role_name}}\",\n  \"description\": \"External reviewer brought in by NBEC for a single cycle\"\n}"
+						},
+						"description": "Tells NBES it should recognise a role name. This does NOT create the role in Keycloak — IAM does that. NBES will only resolve permissions for roles registered here.\n\nIdempotent: re-posting the same name returns the existing row with `200 OK`."
+					},
+					"response": [
+						{
+							"name": "201 Created — new role",
+							"status": "Created",
+							"code": 201,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"id\": \"7c0a8d11-4561-4a3f-8000-1e9a2f0c4001\",\n    \"name\": \"external-reviewer\",\n    \"description\": \"External reviewer brought in by NBEC for a single cycle\",\n    \"is_active\": true,\n    \"permissions\": [],\n    \"created_at\": \"2026-05-19T11:30:00Z\"\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						},
+						{
+							"name": "200 OK — already exists",
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"id\": \"7c0a8d11-4561-4a3f-8000-1e9a2f0c4001\",\n    \"name\": \"external-reviewer\",\n    \"description\": \"External reviewer brought in by NBEC for a single cycle\",\n    \"is_active\": true,\n    \"permissions\": [],\n    \"created_at\": \"2026-05-19T11:30:00Z\"\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				},
+				{
+					"name": "Get role",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/roles/{{role_id}}/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "admin", "rbac", "roles", "{{role_id}}", ""]
+						}
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"id\": \"7c0a8d11-4561-4a3f-8000-1e9a2f0c4001\",\n    \"name\": \"external-reviewer\",\n    \"description\": \"External reviewer brought in by NBEC for a single cycle\",\n    \"is_active\": true,\n    \"permissions\": [],\n    \"created_at\": \"2026-05-19T11:30:00Z\"\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				},
+				{
+					"name": "Patch role description",
+					"request": {
+						"method": "PATCH",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/roles/{{role_id}}/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "admin", "rbac", "roles", "{{role_id}}", ""]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"description\": \"External reviewer — appointed by NBEC for the 2026 cycle\"\n}"
+						}
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"id\": \"7c0a8d11-4561-4a3f-8000-1e9a2f0c4001\",\n    \"name\": \"external-reviewer\",\n    \"description\": \"External reviewer — appointed by NBEC for the 2026 cycle\",\n    \"is_active\": true,\n    \"permissions\": [],\n    \"created_at\": \"2026-05-19T11:30:00Z\"\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				},
+				{
+					"name": "Deactivate role (soft delete)",
+					"request": {
+						"method": "DELETE",
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/roles/{{role_id}}/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "admin", "rbac", "roles", "{{role_id}}", ""]
+						},
+						"description": "Marks the role inactive. Historical audit rows still resolve. Users holding this role lose every NBES permission within 60 s (cache invalidation is immediate on this node)."
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"id\": \"7c0a8d11-4561-4a3f-8000-1e9a2f0c4001\",\n    \"name\": \"external-reviewer\",\n    \"description\": \"External reviewer — appointed by NBEC for the 2026 cycle\",\n    \"is_active\": false,\n    \"permissions\": [\"item:approve\"],\n    \"created_at\": \"2026-05-19T11:30:00Z\"\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "3 · Role ↔ permission matrix",
+			"item": [
+				{
+					"name": "Get role permissions",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/roles/{{role_id}}/permissions/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "admin", "rbac", "roles", "{{role_id}}", "permissions", ""]
+						}
+					},
+					"response": [
+						{
+							"name": "200 OK — empty grant",
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"role_id\": \"7c0a8d11-4561-4a3f-8000-1e9a2f0c4001\",\n    \"role_name\": \"external-reviewer\",\n    \"permissions\": []\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				},
+				{
+					"name": "Replace role permissions",
+					"request": {
+						"method": "PUT",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/roles/{{role_id}}/permissions/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "admin", "rbac", "roles", "{{role_id}}", "permissions", ""]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"codenames\": [\"item:approve\", \"marking:moderate\"]\n}"
+						},
+						"description": "Replaces the grant set with the supplied list. The view diffs against the current grants and reports `added` / `removed`. Cache is invalidated immediately for this role."
+					},
+					"response": [
+						{
+							"name": "200 OK — grants applied",
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"role_id\": \"7c0a8d11-4561-4a3f-8000-1e9a2f0c4001\",\n    \"role_name\": \"external-reviewer\",\n    \"permissions\": [\"item:approve\", \"marking:moderate\"],\n    \"added\": [\"item:approve\", \"marking:moderate\"],\n    \"removed\": []\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						},
+						{
+							"name": "400 — unknown codename",
+							"status": "Bad Request",
+							"code": 400,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"VALIDATION_ERROR\",\n    \"message\": \"Invalid input.\",\n    \"fields\": {\n      \"codenames\": [\"Unknown codenames: ['vault:open-fridge']. Codenames must be declared in code and seeded via migration; they cannot be created at runtime.\"]\n    }\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				},
+				{
+					"name": "Clear role permissions",
+					"request": {
+						"method": "PUT",
+						"header": [{ "key": "Content-Type", "value": "application/json" }],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/roles/{{role_id}}/permissions/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "admin", "rbac", "roles", "{{role_id}}", "permissions", ""]
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"codenames\": []\n}"
+						},
+						"description": "Empty list ⇒ every grant on this role is removed. Useful for snapshot / restore tests."
+					},
+					"response": [
+						{
+							"name": "200 OK — all removed",
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"role_id\": \"7c0a8d11-4561-4a3f-8000-1e9a2f0c4001\",\n    \"role_name\": \"external-reviewer\",\n    \"permissions\": [],\n    \"added\": [],\n    \"removed\": [\"item:approve\", \"marking:moderate\"]\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "4 · Denial scenarios",
+			"description": "Confirms the gateway rejects unauthorised callers AND records the audit event. Use the `writer_token` variable (a JWT carrying only `item-writer` in `realm_access.roles`).",
+			"item": [
+				{
+					"name": "Writer hits admin (expect 403)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{writer_token}}" }
+						],
+						"auth": { "type": "noauth" },
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/permissions/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "admin", "rbac", "permissions", ""]
+						},
+						"description": "An item-writer should never see the admin surface. Expect 403 AUTHZ_DENIED and an `AuditEvent(action=\"AUTHZ_DENIED\")` row."
+					},
+					"response": [
+						{
+							"name": "403 Forbidden",
+							"status": "Forbidden",
+							"code": 403,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"AUTHZ_DENIED\",\n    \"message\": \"You do not have permission to perform this action.\"\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				},
+				{
+					"name": "Writer introspection (expect 200, narrow permissions)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{writer_token}}" }
+						],
+						"auth": { "type": "noauth" },
+						"url": {
+							"raw": "{{base_url}}/api/v1/me/permissions/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "me", "permissions", ""]
+						},
+						"description": "`/me/permissions` is open to any authenticated user. The writer sees only `item:create`."
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"sub\": \"7d2e4c61-9e02-4b30-8c14-8e44cb1d0001\",\n    \"email\": \"writer@nbes.test\",\n    \"roles_in_jwt\": [\"item-writer\"],\n    \"roles_recognised_by_nbes\": [\"item-writer\"],\n    \"permissions\": [\"item:create\"]\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				},
+				{
+					"name": "Unknown role in JWT (expect zero permissions)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{writer_token}}" }
+						],
+						"auth": { "type": "noauth" },
+						"url": {
+							"raw": "{{base_url}}/api/v1/me/permissions/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "me", "permissions", ""]
+						},
+						"description": "Mint a token whose `realm_access.roles` is something NBES has never been told about (e.g. `nbes-ghost`). The endpoint returns 200 with an empty `permissions` set — the local Role registry filters it out. This is the cross-system safety property: an Examiner-in-AMS cannot impersonate an Examiner-in-NBES."
+					},
+					"response": [
+						{
+							"name": "200 OK — ignored",
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"sub\": \"ghost-0000-0000-0000-000000000000\",\n    \"email\": \"ghost@nbes.test\",\n    \"roles_in_jwt\": [\"nbes-ghost\"],\n    \"roles_recognised_by_nbes\": [],\n    \"permissions\": []\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				},
+				{
+					"name": "No token (expect 401)",
+					"request": {
+						"method": "GET",
+						"auth": { "type": "noauth" },
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/permissions/",
+							"host": ["{{base_url}}"],
+							"path": ["api", "v1", "admin", "rbac", "permissions", ""]
+						}
+					},
+					"response": [
+						{
+							"name": "401 Unauthorized",
+							"status": "Unauthorized",
+							"code": 401,
+							"_postman_previewlanguage": "json",
+							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"NOT_AUTHENTICATED\",\n    \"message\": \"Authentication credentials were not provided.\"\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
+						}
+					]
+				}
+			]
+		}
+	]
+}

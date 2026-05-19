@@ -1,40 +1,141 @@
+"""shared/auth.py — JWT authentication for NBES.
+
+Two modes, switched by ``settings.KEYCLOAK_ENABLED``:
+
+* **Production** (``KEYCLOAK_ENABLED=True``): validates Keycloak RS256
+  tokens. The signing key is fetched from the realm JWKS endpoint and
+  cached for ``JWKS_CACHE_SECONDS`` (5 minutes). Issuer is checked against
+  ``settings.KEYCLOAK_REALM_URL``; audience against
+  ``settings.KEYCLOAK_VALID_AUDIENCES`` (when set).
+
+* **Dev** (``KEYCLOAK_ENABLED=False``): validates an HS256 token signed
+  with ``settings.JWT_SECRET_KEY`` so local development needs no Keycloak.
+
+On success ``request.auth`` carries the decoded payload — including
+``sub``, ``email``, and ``realm_access.roles``. ``request.user`` is a thin
+``UserProfile`` mirror (created on first sight). Identity, MFA, sessions
+and roles all stay with IAM; NBES never stores credentials.
+
+Ported from ``iam/users/authentication.py`` so the wire-format and JWKS
+behaviour stay identical.
 """
-shared/auth.py — JWT Authentication for NBES
-=============================================
+from __future__ import annotations
 
-In dev (KEYCLOAK_ENABLED=False):
-    Validates JWTs using the shared HS256 secret (JWT_SECRET_KEY).
-    Token payload must contain: user_id, email, role.
-
-In production (KEYCLOAK_ENABLED=True):
-    Validates Keycloak-issued RS256 JWTs by fetching JWKS from the realm URL.
-    Reads realm_access.roles to populate request.auth["role"].
-    Public key is cached per realm to avoid per-request JWKS fetches.
-
-Usage in views:
-    request.auth["sub"]        — Keycloak sub UUID (user identity)
-    request.auth["email"]      — user email
-    request.auth["role"]       — primary NBES role string
-    request.auth["roles"]      — full list of roles from realm_access.roles
-
-Reference: GSL IAM Keycloak Specification v1.0 § KeycloakJWTAuthentication
-"""
+import json
 
 import jwt
+import requests
 from django.conf import settings
+from django.core.cache import cache
+from jwt.algorithms import RSAAlgorithm
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 
 
-class KeycloakJWTAuthentication(BaseAuthentication):
-    """
-    DRF authentication class.
-    Validates Bearer JWT from the Authorization header.
-    Populates request.auth with decoded token payload.
-    request.user is set to an AnonymousUser — identity comes from request.auth.
+JWKS_CACHE_SECONDS = 300
 
-    TODO (production): Implement JWKS fetching and RS256 validation when
-    KEYCLOAK_ENABLED=True. See GSL IAM Keycloak Specification v1.0.
+
+def _normalise_url(url: str) -> str:
+    return (url or "").rstrip("/")
+
+
+def _fetch_jwks(realm_url: str) -> dict:
+    cache_key = f"nbes:keycloak:jwks:{realm_url}"
+    jwks = cache.get(cache_key)
+    if jwks:
+        return jwks
+
+    response = requests.get(
+        f"{realm_url}/protocol/openid-connect/certs",
+        timeout=5,
+    )
+    response.raise_for_status()
+    jwks = response.json()
+    cache.set(cache_key, jwks, timeout=JWKS_CACHE_SECONDS)
+    return jwks
+
+
+def _signing_key(realm_url: str, kid: str):
+    jwks = _fetch_jwks(realm_url)
+    for key_data in jwks.get("keys", []):
+        if key_data.get("kid") == kid:
+            return RSAAlgorithm.from_jwk(json.dumps(key_data))
+
+    # Key rotation: drop the cached JWKS and try once more.
+    cache.delete(f"nbes:keycloak:jwks:{realm_url}")
+    jwks = _fetch_jwks(realm_url)
+    for key_data in jwks.get("keys", []):
+        if key_data.get("kid") == kid:
+            return RSAAlgorithm.from_jwk(json.dumps(key_data))
+
+    raise AuthenticationFailed("Token signing key not found.")
+
+
+def _decode_rs256(token: str) -> dict:
+    try:
+        header = jwt.get_unverified_header(token)
+        unverified = jwt.decode(
+            token,
+            options={"verify_signature": False},
+            algorithms=["RS256"],
+        )
+    except Exception as exc:  # malformed header / body
+        raise AuthenticationFailed("Invalid token format.") from exc
+
+    realm_url = _normalise_url(getattr(settings, "KEYCLOAK_REALM_URL", ""))
+    if not realm_url:
+        raise AuthenticationFailed("KEYCLOAK_REALM_URL is not configured.")
+
+    if _normalise_url(unverified.get("iss", "")) != realm_url:
+        raise AuthenticationFailed("Token issuer not recognised.")
+
+    key = _signing_key(realm_url, header.get("kid", ""))
+
+    audiences = [
+        aud for aud in getattr(settings, "KEYCLOAK_VALID_AUDIENCES", []) or [] if aud
+    ]
+    decode_kwargs = {
+        "key": key,
+        "algorithms": ["RS256"],
+        "issuer": realm_url,
+    }
+    if audiences:
+        decode_kwargs["audience"] = audiences
+    else:
+        decode_kwargs["options"] = {"verify_aud": False}
+
+    try:
+        return jwt.decode(token, **decode_kwargs)
+    except jwt.ExpiredSignatureError as exc:
+        raise AuthenticationFailed("Token has expired.") from exc
+    except jwt.InvalidTokenError as exc:
+        raise AuthenticationFailed(f"Token validation failed: {exc}") from exc
+
+
+def _decode_hs256(token: str) -> dict:
+    try:
+        return jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise AuthenticationFailed("Token has expired.") from exc
+    except jwt.InvalidTokenError as exc:
+        raise AuthenticationFailed(f"Invalid token: {exc}") from exc
+
+
+class KeycloakJWTAuthentication(BaseAuthentication):
+    """DRF authentication class.
+
+    Dispatches on the token's ``alg`` header:
+
+    * ``RS256`` → Keycloak path (JWKS, issuer check). Requires
+      ``settings.KEYCLOAK_REALM_URL`` regardless of ``KEYCLOAK_ENABLED``,
+      so a dev developer can paste a real IAM token by just setting that
+      one variable.
+    * ``HS256`` → dev path with the shared secret. Refused when
+      ``KEYCLOAK_ENABLED=True`` so prod won't accept forged HS256 tokens.
     """
 
     def authenticate(self, request):
@@ -42,47 +143,56 @@ class KeycloakJWTAuthentication(BaseAuthentication):
         if not auth_header.startswith("Bearer "):
             return None
 
-        token = auth_header.split(" ", 1)[1]
+        token = auth_header.split(" ", 1)[1].strip()
+        if not token:
+            return None
 
         try:
+            alg = jwt.get_unverified_header(token).get("alg")
+        except Exception as exc:
+            raise AuthenticationFailed("Invalid token format.") from exc
+
+        if alg == "RS256":
+            payload = _decode_rs256(token)
+        elif alg == "HS256":
             if settings.KEYCLOAK_ENABLED:
-                # TODO: Implement JWKS-based RS256 validation
-                # 1. Decode header to get kid
-                # 2. Fetch JWKS from settings.KEYCLOAK_REALM_URL + /protocol/openid-connect/certs
-                # 3. Match kid to JWKS key
-                # 4. Verify RS256 signature
-                # 5. Validate iss, exp, aud claims
-                raise NotImplementedError(
-                    "Keycloak JWKS validation not yet implemented. "
-                    "See GSL IAM Keycloak Specification v1.0."
+                raise AuthenticationFailed(
+                    "HS256 tokens are not accepted in Keycloak mode."
                 )
-            else:
-                # Dev mode: shared HS256 secret
-                payload = jwt.decode(
-                    token,
-                    settings.JWT_SECRET_KEY,
-                    algorithms=[settings.JWT_ALGORITHM],
-                )
-        except jwt.ExpiredSignatureError:
-            raise AuthenticationFailed("Token has expired.")
-        except jwt.InvalidTokenError as e:
-            raise AuthenticationFailed(f"Invalid token: {e}")
+            payload = _decode_hs256(token)
+        else:
+            raise AuthenticationFailed(f"Unsupported signing algorithm: {alg}.")
 
-        # Normalise payload — Keycloak uses 'sub'; dev tokens use 'user_id'
+        # Normalise to the production shape: callers downstream rely on
+        # `sub` and `realm_access.roles` regardless of mode.
         payload.setdefault("sub", payload.get("user_id", ""))
-        payload.setdefault("roles", [payload.get("role", "")])
+        if "realm_access" not in payload:
+            single = payload.get("role")
+            roles = single if isinstance(single, list) else ([single] if single else [])
+            payload["realm_access"] = {"roles": roles}
 
-        # get_or_create a thin UserProfile for Django admin compatibility
-        from apps.users.models import UserProfile
-        user, _ = UserProfile.objects.get_or_create(
-            keycloak_sub=payload["sub"],
-            defaults={
-                "email": payload.get("email", ""),
-                "role": payload.get("role", ""),
-            },
-        )
-
+        user = self._mirror_profile(payload)
         return user, payload
 
     def authenticate_header(self, request):
         return "Bearer"
+
+    def _mirror_profile(self, payload: dict):
+        """Get-or-create the thin local UserProfile keyed on Keycloak sub."""
+        from apps.users.models import UserProfile
+
+        sub = payload.get("sub")
+        if not sub:
+            raise AuthenticationFailed("Token subject missing.")
+
+        roles = payload.get("realm_access", {}).get("roles") or []
+        primary_role = roles[0] if roles else ""
+
+        user, _ = UserProfile.objects.get_or_create(
+            keycloak_sub=sub,
+            defaults={
+                "email": payload.get("email", ""),
+                "role": primary_role,
+            },
+        )
+        return user

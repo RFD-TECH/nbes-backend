@@ -12,7 +12,79 @@ Reference: NBES System Architecture §2.1 — shared/middleware.py
 """
 
 import uuid
+import logging
+from django.http import JsonResponse
 from django.utils.deprecation import MiddlewareMixin
+
+
+logger = logging.getLogger(__name__)
+
+
+class JsonExceptionMiddleware:
+    """Return JSON envelopes for uncaught API exceptions."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        try:
+            response = self.get_response(request)
+        except Exception as exc:
+            if not request.path.startswith("/api/"):
+                raise
+
+            logger.exception("Unhandled API exception")
+            return self._error_response(request, 500, "SERVER_ERROR")
+
+        if self._should_wrap_response(request, response):
+            return self._error_response(
+                request,
+                response.status_code,
+                self._error_code(response.status_code),
+            )
+        return response
+
+    @staticmethod
+    def _should_wrap_response(request, response):
+        content_type = response.get("Content-Type", "")
+        return (
+            request.path.startswith("/api/")
+            and response.status_code >= 400
+            and content_type.startswith("text/html")
+        )
+
+    @staticmethod
+    def _error_code(status_code):
+        return {
+            400: "VALIDATION_ERROR",
+            401: "NOT_AUTHENTICATED",
+            403: "AUTHZ_DENIED",
+            404: "NOT_FOUND",
+            405: "METHOD_NOT_ALLOWED",
+            429: "RATE_LIMITED",
+            500: "SERVER_ERROR",
+        }.get(status_code, "ERROR")
+
+    @staticmethod
+    def _error_message(status_code):
+        return {
+            404: "Not found.",
+            500: "Internal server error.",
+        }.get(status_code, "Request failed.")
+
+    def _error_response(self, request, status_code, error_code):
+        request_id = str(getattr(request, "request_id", ""))
+        return JsonResponse(
+            {
+                "success": False,
+                "error": {
+                    "code": error_code,
+                    "message": self._error_message(status_code),
+                },
+                "meta": {"request_id": request_id},
+            },
+            status=status_code,
+        )
 
 
 class AuditMiddleware(MiddlewareMixin):

@@ -11,12 +11,26 @@ services:
     # Exposed on 5434 to avoid conflict with ams-backend db on 5432
     ports:
       - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nbes_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      default:
+        aliases:
+          - nbes-db
 
   redis:
     image: redis:7-alpine
     # Exposed on 6381 to avoid conflict with ams-backend redis on 6379
     ports:
       - "6381:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   web:
     container_name: nbes-backend
@@ -36,7 +50,7 @@ services:
       DBNAME: nbes_db
       DBUSER: postgres
       DBPASSWORD: postgres
-      DBHOST: db
+      DBHOST: nbes-db
       DBPORT: "5432"
       REDIS_URL: redis://redis:6379/0
       KAFKA_ENABLED: "False"
@@ -44,8 +58,10 @@ services:
       VAULT_DEV_MODE: "True"
       TIME_ZONE: Africa/Accra
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - .:/app
 
@@ -64,16 +80,19 @@ services:
       DBNAME: nbes_db
       DBUSER: postgres
       DBPASSWORD: postgres
-      DBHOST: db
+      DBHOST: nbes-db
       DBPORT: "5432"
       REDIS_URL: redis://redis:6379/0
       KAFKA_ENABLED: "False"
       KEYCLOAK_ENABLED: "False"
       VAULT_DEV_MODE: "True"
     depends_on:
-      - db
-      - redis
-      - web
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
     volumes:
       - .:/app
 
@@ -91,16 +110,19 @@ services:
       DBNAME: nbes_db
       DBUSER: postgres
       DBPASSWORD: postgres
-      DBHOST: db
+      DBHOST: nbes-db
       DBPORT: "5432"
       REDIS_URL: redis://redis:6379/0
       KAFKA_ENABLED: "False"
       KEYCLOAK_ENABLED: "False"
       VAULT_DEV_MODE: "True"
     depends_on:
-      - db
-      - redis
-      - web
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
     volumes:
       - .:/app
 
@@ -118,16 +140,19 @@ services:
       DBNAME: nbes_db
       DBUSER: postgres
       DBPASSWORD: postgres
-      DBHOST: db
+      DBHOST: nbes-db
       DBPORT: "5432"
       REDIS_URL: redis://redis:6379/0
       KAFKA_ENABLED: "False"
       KEYCLOAK_ENABLED: "False"
       VAULT_DEV_MODE: "True"
     depends_on:
-      - db
-      - redis
-      - web
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
     volumes:
       - .:/app
 
@@ -145,16 +170,19 @@ services:
       DBNAME: nbes_db
       DBUSER: postgres
       DBPASSWORD: postgres
-      DBHOST: db
+      DBHOST: nbes-db
       DBPORT: "5432"
       REDIS_URL: redis://redis:6379/0
       KAFKA_ENABLED: "False"
       KEYCLOAK_ENABLED: "False"
       VAULT_DEV_MODE: "True"
     depends_on:
-      - db
-      - redis
-      - web
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
     volumes:
       - .:/app
 

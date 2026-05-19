@@ -51,7 +51,9 @@ docker compose run web python manage.py createsuperuser
 ```
 
 **API:** http://localhost:8003/api/v1/
-**Docs:** http://localhost:8003/api/docs/
+**Swagger Docs:** http://localhost:8003/api/docs/
+**Redoc Docs:** http://localhost:8003/api/redoc/
+**OpenAPI Schema:** http://localhost:8003/api/schema/
 **Admin:** http://localhost:8003/admin/
 **Via gateway:** http://localhost:8000/api/nbes/
 
