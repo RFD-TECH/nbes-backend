@@ -17,8 +17,16 @@ class RoleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Role
-        fields = ["id", "name", "description", "is_active", "permissions", "created_at"]
-        read_only_fields = ["id", "permissions", "created_at"]
+        fields = [
+            "id",
+            "name",
+            "description",
+            "is_active",
+            "is_custom",
+            "permissions",
+            "created_at",
+        ]
+        read_only_fields = ["id", "is_custom", "permissions", "created_at"]
 
     @extend_schema_field(serializers.ListField(child=serializers.CharField()))
     def get_permissions(self, obj):

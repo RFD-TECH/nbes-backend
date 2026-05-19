@@ -23,7 +23,7 @@ def _token(roles=None, sub=None):
     payload = {
         "sub": str(sub or "00000000-0000-0000-0000-000000000001"),
         "email": "test@example.com",
-        "realm_access": {"roles": roles or ["nbec-secretariat"]},
+        "realm_access": {"roles": roles or ["nbec_secretariat"]},
     }
     return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm="HS256")
 
@@ -35,7 +35,7 @@ def _client(roles=None, sub=None):
 
 
 def _secretariat_client():
-    return _client(roles=["nbec-secretariat", "system-administrator"])
+    return _client(roles=["nbec_secretariat"])
 
 
 ACTOR_SUB = "00000000-0000-0000-0000-000000000001"
@@ -45,18 +45,6 @@ ACTOR_SUB = "00000000-0000-0000-0000-000000000001"
 
 @pytest.fixture
 def member(db):
-    from apps.users.models import Role, Permission, RolePermission
-    # Ensure the committee:manage permission exists for tests
-    role, _ = Role.objects.get_or_create(
-        name="system-administrator",
-        defaults={"display_name": "System Administrator", "is_active": True},
-    )
-    perm, _ = Permission.objects.get_or_create(
-        codename="committee:manage",
-        defaults={"display_name": "Manage Committee"},
-    )
-    RolePermission.objects.get_or_create(role=role, permission=perm)
-
     return NBECMember.objects.create(
         keycloak_sub=ACTOR_SUB,
         full_name="View Test Member",
@@ -174,7 +162,7 @@ class TestCOIDeclare:
     url = "/api/v1/nbec/coi/"
 
     def test_declare_coi(self, member):
-        client = _client(roles=["nbec-member"])
+        client = _client(roles=["nbec_member"])
         resp = client.post(self.url, data={
             "member": str(member.id),
             "subject_type": "supplier",

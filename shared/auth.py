@@ -161,7 +161,10 @@ class KeycloakJWTAuthentication(BaseAuthentication):
                 )
             payload = _decode_hs256(token)
         else:
-            raise AuthenticationFailed(f"Unsupported signing algorithm: {alg}.")
+            raise AuthenticationFailed(
+                f"Unsupported signing algorithm: {alg}. Use the RS256 "
+                "Keycloak access_token returned by IAM /api/auth/mfa/verify/."
+            )
 
         # Normalise to the production shape: callers downstream rely on
         # `sub` and `realm_access.roles` regardless of mode.

@@ -194,6 +194,17 @@ KEYCLOAK_REALM_URL = os.environ.get("KEYCLOAK_REALM_URL", "")
 JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", SECRET_KEY)
 JWT_ALGORITHM = "HS256"
 
+# NBES's own backend client_id. Tokens for NBES must list this in `aud`,
+# and NBES reads its system roles from resource_access[NBES_CLIENT_ID].roles.
+NBES_CLIENT_ID = os.environ.get("NBES_CLIENT_ID", "nbes-api")
+KEYCLOAK_VALID_AUDIENCES = [
+    value.strip()
+    for value in os.environ.get(
+        "KEYCLOAK_VALID_AUDIENCES", NBES_CLIENT_ID
+    ).split(",")
+    if value.strip()
+]
+
 # ── Vault ─────────────────────────────────────────────────────────────────────
 VAULT_DEV_MODE = os.environ.get("VAULT_DEV_MODE", "True") == "True"
 PKCS11_LIB_PATH = os.environ.get("PKCS11_LIB_PATH", "")
