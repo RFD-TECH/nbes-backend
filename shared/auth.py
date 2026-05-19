@@ -126,7 +126,17 @@ def _decode_hs256(token: str) -> dict:
 
 
 class KeycloakJWTAuthentication(BaseAuthentication):
-    """DRF authentication class. RS256 in prod, HS256 in dev."""
+    """DRF authentication class.
+
+    Dispatches on the token's ``alg`` header:
+
+    * ``RS256`` → Keycloak path (JWKS, issuer check). Requires
+      ``settings.KEYCLOAK_REALM_URL`` regardless of ``KEYCLOAK_ENABLED``,
+      so a dev developer can paste a real IAM token by just setting that
+      one variable.
+    * ``HS256`` → dev path with the shared secret. Refused when
+      ``KEYCLOAK_ENABLED=True`` so prod won't accept forged HS256 tokens.
+    """
 
     def authenticate(self, request):
         auth_header = request.headers.get("Authorization", "")
@@ -137,10 +147,21 @@ class KeycloakJWTAuthentication(BaseAuthentication):
         if not token:
             return None
 
-        if settings.KEYCLOAK_ENABLED:
+        try:
+            alg = jwt.get_unverified_header(token).get("alg")
+        except Exception as exc:
+            raise AuthenticationFailed("Invalid token format.") from exc
+
+        if alg == "RS256":
             payload = _decode_rs256(token)
-        else:
+        elif alg == "HS256":
+            if settings.KEYCLOAK_ENABLED:
+                raise AuthenticationFailed(
+                    "HS256 tokens are not accepted in Keycloak mode."
+                )
             payload = _decode_hs256(token)
+        else:
+            raise AuthenticationFailed(f"Unsupported signing algorithm: {alg}.")
 
         # Normalise to the production shape: callers downstream rely on
         # `sub` and `realm_access.roles` regardless of mode.

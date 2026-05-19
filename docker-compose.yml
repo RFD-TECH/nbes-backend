@@ -16,6 +16,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      default:
+        aliases:
+          - nbes-db
 
   redis:
     image: redis:7-alpine
@@ -46,7 +50,7 @@ services:
       DBNAME: nbes_db
       DBUSER: postgres
       DBPASSWORD: postgres
-      DBHOST: db
+      DBHOST: nbes-db
       DBPORT: "5432"
       REDIS_URL: redis://redis:6379/0
       KAFKA_ENABLED: "False"
@@ -76,7 +80,7 @@ services:
       DBNAME: nbes_db
       DBUSER: postgres
       DBPASSWORD: postgres
-      DBHOST: db
+      DBHOST: nbes-db
       DBPORT: "5432"
       REDIS_URL: redis://redis:6379/0
       KAFKA_ENABLED: "False"
@@ -106,7 +110,7 @@ services:
       DBNAME: nbes_db
       DBUSER: postgres
       DBPASSWORD: postgres
-      DBHOST: db
+      DBHOST: nbes-db
       DBPORT: "5432"
       REDIS_URL: redis://redis:6379/0
       KAFKA_ENABLED: "False"
@@ -136,7 +140,7 @@ services:
       DBNAME: nbes_db
       DBUSER: postgres
       DBPASSWORD: postgres
-      DBHOST: db
+      DBHOST: nbes-db
       DBPORT: "5432"
       REDIS_URL: redis://redis:6379/0
       KAFKA_ENABLED: "False"
@@ -166,7 +170,7 @@ services:
       DBNAME: nbes_db
       DBUSER: postgres
       DBPASSWORD: postgres
-      DBHOST: db
+      DBHOST: nbes-db
       DBPORT: "5432"
       REDIS_URL: redis://redis:6379/0
       KAFKA_ENABLED: "False"

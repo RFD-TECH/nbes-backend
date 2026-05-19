@@ -20,6 +20,12 @@ from django.core.cache import cache
 CACHE_TTL = 60
 _CACHE_PREFIX = "nbes:rbac:role:"
 
+# IAM platform role that NBES treats as a full-access wildcard, mirroring
+# IAM's own ROLE_PERMISSION_MAP["super_admin"] = ["*"]. Bearer is granted
+# every permission NBES enforces, without needing a local Role row.
+SUPER_ADMIN_ROLE = "super_admin"
+WILDCARD = "*"
+
 
 def get_nbes_role_names(jwt_payload: dict) -> list[str]:
     """Return the role names this user holds *in NBES*.
@@ -57,10 +63,17 @@ def _permissions_for_role(role_name: str) -> set[str]:
 
 
 def permissions_for(jwt_payload: dict) -> set[str]:
-    """All codenames this user holds in NBES, resolved from the JWT."""
+    """All codenames this user holds in NBES, resolved from the JWT.
+
+    IAM ``super_admin`` short-circuits to the wildcard sentinel — bearer
+    is granted every NBES permission without needing a local Role row.
+    """
     role_names = get_nbes_role_names(jwt_payload)
     if not role_names:
         return set()
+
+    if SUPER_ADMIN_ROLE in role_names:
+        return {WILDCARD}
 
     from apps.users.models import Role
 
@@ -79,7 +92,8 @@ def permissions_for(jwt_payload: dict) -> set[str]:
 
 
 def has_permission(jwt_payload: dict, codename: str) -> bool:
-    return codename in permissions_for(jwt_payload)
+    granted = permissions_for(jwt_payload)
+    return WILDCARD in granted or codename in granted
 
 
 def invalidate_role(role_name: str) -> None:
