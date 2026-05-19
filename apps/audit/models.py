@@ -17,7 +17,7 @@ class AuditEvent(models.Model):
     event_id = models.UUIDField(unique=True, default=uuid.uuid4)
     actor_id = models.UUIDField(null=True, blank=True)   # Keycloak sub; NULL for system events
     action = models.CharField(max_length=100)             # e.g. ITEM_APPROVED, VAULT_READ
-    entity_type = models.CharField(max_length=100, blank=True)
+    entity_type = models.CharField(max_length=100, blank=True, default="")
     entity_id = models.UUIDField(null=True, blank=True)
     old_state = models.JSONField(null=True, blank=True)
     new_state = models.JSONField(null=True, blank=True)

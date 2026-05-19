@@ -13,7 +13,7 @@ from rest_framework import serializers
 from rest_framework.views import APIView
 from apps.audit.models import AuditEvent
 from shared import rbac
-from shared.permissions import HasPermission
+from shared.permissions import has_permission
 
 from .models import Permission, Role, RolePermission
 from .serializers import (
@@ -49,14 +49,6 @@ def _audit(request, action, entity_id=None, new_state=None, old_state=None):
         request_id=getattr(request, "request_id", None),
         ip_address=getattr(request, "ip_address", None),
     )
-
-
-def _rbac_manage():
-    """Permission-class factory bound to ``rbac:manage``."""
-    class _RbacManage(HasPermission):
-        def __init__(self):
-            super().__init__("rbac:manage")
-    return _RbacManage
 
 
 def _success_envelope(name, data_fields):
@@ -115,7 +107,7 @@ class PermissionListView(APIView):
     Read-only: codenames are declared in code, never invented at runtime.
     """
     authentication_classes_setting = None  # use DRF default
-    permission_classes = [IsAuthenticated, _rbac_manage()]
+    permission_classes = [IsAuthenticated, has_permission("rbac:manage")]
 
     @extend_schema(
         tags=["RBAC Admin"],
@@ -154,7 +146,7 @@ class RoleListCreateView(APIView):
     happens in IAM. NBES will only resolve permissions for roles whose
     names are in this table.
     """
-    permission_classes = [IsAuthenticated, _rbac_manage()]
+    permission_classes = [IsAuthenticated, has_permission("rbac:manage")]
 
     @extend_schema(
         tags=["RBAC Admin"],
@@ -228,7 +220,7 @@ class RoleDetailView(APIView):
     keep referring to a real role. The local cache is invalidated so
     revocations take effect within 60 s.
     """
-    permission_classes = [IsAuthenticated, _rbac_manage()]
+    permission_classes = [IsAuthenticated, has_permission("rbac:manage")]
 
     def _get(self, pk):
         try:
@@ -342,7 +334,7 @@ class RolePermissionsView(APIView):
     given set. Computes additions/removals, persists in one transaction,
     invalidates the role cache.
     """
-    permission_classes = [IsAuthenticated, _rbac_manage()]
+    permission_classes = [IsAuthenticated, has_permission("rbac:manage")]
 
     @extend_schema(
         tags=["RBAC Admin"],
