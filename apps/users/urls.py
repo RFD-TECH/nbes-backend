@@ -6,6 +6,7 @@ the matrix admin surface, once under ``/api/v1/me/`` for introspection.
 from django.urls import path
 
 from .views import (
+    DashboardView,
     MyPermissionsView,
     PermissionListView,
     RoleDetailView,
@@ -26,6 +27,7 @@ admin_urlpatterns = [
 
 me_urlpatterns = [
     path("permissions/", MyPermissionsView.as_view(), name="me-permissions"),
+    path("dashboard/", DashboardView.as_view(), name="me-dashboard"),
 ]
 
 # Default export — mounted at /api/v1/admin/rbac/ in config/urls.py

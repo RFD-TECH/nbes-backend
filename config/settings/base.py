@@ -6,7 +6,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 environ.Env.read_env(BASE_DIR / ".env")
 
-SECRET_KEY = os.environ.get("SECRET_KEY")
+SECRET_KEY = os.environ["SECRET_KEY"]
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost").split(",")
 
@@ -151,7 +151,8 @@ SPECTACULAR_SETTINGS = {
     "COMPONENT_SPLIT_REQUEST": True,
     "TAGS": [
         {"name": "RBAC Admin", "description": "Manage NBES role and permission mapping."},
-        {"name": "Current User", "description": "Inspect the current user's NBES permissions."},
+        {"name": "Current User", "description": "Inspect the current user's NBES permissions and dashboard."},
+        {"name": "Audit", "description": "Search and verify the append-only audit trail (Auditor / Administrator only)."},
     ],
 }
 

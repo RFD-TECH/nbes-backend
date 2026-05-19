@@ -40,4 +40,10 @@ app.conf.beat_schedule = {
         "schedule": crontab(hour=2, minute=0),
         "options": {"queue": "sla-monitor"},
     },
+    # Audit chain — daily at 01:00 UTC; failure pages on-call (NBE-N02)
+    "daily-audit-anchor-export": {
+        "task": "apps.audit.tasks.export_daily_audit_anchor",
+        "schedule": crontab(hour=1, minute=0),
+        "options": {"queue": "marking-high"},
+    },
 }

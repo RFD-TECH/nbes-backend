@@ -175,6 +175,10 @@ class AuditChainView(APIView):
         },
     )
     def get(self, request, date_str):
+        import hashlib
+        import json
+        from .models import DailyHashAnchor
+
         try:
             target = datetime.date.fromisoformat(date_str)
         except ValueError:
@@ -187,6 +191,10 @@ class AuditChainView(APIView):
         qs = AuditEvent.objects.filter(created_at__date=target).order_by("id")
         count = qs.count()
 
+        anchor = DailyHashAnchor.objects.filter(date=target).first()
+        exported_to_s22_at = anchor.exported_to_s22_at.isoformat() if (anchor and anchor.exported_to_s22_at) else None
+        anchor_ref = anchor.anchor_ref if anchor else ""
+
         if count == 0:
             return _envelope(
                 {
@@ -195,20 +203,52 @@ class AuditChainView(APIView):
                     "first_event_id": None,
                     "last_event_id": None,
                     "anchor_hash": None,
+                    "chain_valid": True,
+                    "exported_to_s22_at": exported_to_s22_at,
+                    "anchor_ref": anchor_ref,
                 },
                 request_id=getattr(request, "request_id", ""),
             )
 
         first = qs.values("event_id").first()
-        last = qs.values("event_id", "chain_hash").last()
+        last_row = qs.values("event_id", "chain_hash").last()
+
+        # Verify chain integrity by replaying all hashes for the date
+        chain_valid = True
+        prev_hash = None
+        for evt in qs.values("event_id", "actor_id", "action", "entity_type", "entity_id", "new_state", "created_at", "chain_hash"):
+            payload = json.dumps({
+                "event_id": str(evt["event_id"]),
+                "actor_id": str(evt["actor_id"] or ""),
+                "action": evt["action"],
+                "entity_type": evt["entity_type"] or "",
+                "entity_id": str(evt["entity_id"] or ""),
+                "new_state": evt["new_state"] or {},
+                "created_at": evt["created_at"].isoformat(),
+            }, sort_keys=True)
+
+            if prev_hash is None:
+                # prev_hash for first event in the day is unknown without full chain scan;
+                # we trust the stored hash for cross-day linking and just verify within-day links
+                prev_hash = evt["chain_hash"]
+                continue
+
+            expected = hashlib.sha256(f"{prev_hash}{payload}".encode()).hexdigest()
+            if expected != evt["chain_hash"]:
+                chain_valid = False
+                break
+            prev_hash = evt["chain_hash"]
 
         return _envelope(
             {
                 "date": str(target),
                 "event_count": count,
                 "first_event_id": str(first["event_id"]),
-                "last_event_id": str(last["event_id"]),
-                "anchor_hash": last["chain_hash"],
+                "last_event_id": str(last_row["event_id"]),
+                "anchor_hash": last_row["chain_hash"],
+                "chain_valid": chain_valid,
+                "exported_to_s22_at": exported_to_s22_at,
+                "anchor_ref": anchor_ref,
             },
             request_id=getattr(request, "request_id", ""),
         )

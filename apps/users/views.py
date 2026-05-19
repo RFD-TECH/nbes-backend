@@ -495,3 +495,118 @@ class MyPermissionsView(APIView):
             },
             request_id=getattr(request, "request_id", ""),
         )
+
+
+# ── role dashboard skeletons ────────────────────────────────────────────────
+
+_DASHBOARD_PANELS = {
+    "nbec-member": [
+        {"id": "meeting_agenda", "title": "Meeting Agenda"},
+        {"id": "pending_approvals", "title": "Pending Approvals"},
+        {"id": "conflict_declarations", "title": "Conflict Declarations"},
+        {"id": "audit_trail_viewer", "title": "Audit Trail"},
+    ],
+    "nbec-secretariat": [
+        {"id": "committee_operations", "title": "Committee Operations"},
+        {"id": "candidate_registration_desk", "title": "Candidate Registration Desk"},
+        {"id": "exception_queue", "title": "Exception Queue"},
+    ],
+    "item-writer": [
+        {"id": "my_items", "title": "My Items"},
+        {"id": "drafts", "title": "Drafts"},
+        {"id": "peer_review_feedback", "title": "Peer Review Feedback"},
+    ],
+    "moderator": [
+        {"id": "review_queue", "title": "Review Queue"},
+        {"id": "panel_decisions", "title": "Panel Decisions"},
+        {"id": "item_search", "title": "Item Search"},
+    ],
+    "examiner": [
+        {"id": "marking_queue", "title": "Marking Queue"},
+        {"id": "borderline_review_queue", "title": "Borderline Review Queue"},
+    ],
+    "candidate": [
+        {"id": "registration", "title": "Registration"},
+        {"id": "payment", "title": "Payment"},
+        {"id": "slip", "title": "Admission Slip"},
+        {"id": "results", "title": "Results"},
+        {"id": "remarking", "title": "Remarking"},
+    ],
+    "clet-registrar": [
+        {"id": "override_queue", "title": "Override Queue"},
+        {"id": "ratification_dashboard", "title": "Ratification Dashboard"},
+        {"id": "cert_trigger_panel", "title": "Certificate Trigger Panel"},
+    ],
+    "invigilator": [
+        {"id": "centre_operations", "title": "Centre Operations"},
+        {"id": "candidate_checkin", "title": "Candidate Check-In"},
+        {"id": "proctoring_queue", "title": "Proctoring Queue"},
+    ],
+    "centre-coordinator": [
+        {"id": "centre_operations", "title": "Centre Operations"},
+        {"id": "candidate_checkin", "title": "Candidate Check-In"},
+        {"id": "proctoring_queue", "title": "Proctoring Queue"},
+    ],
+    "system-administrator": [
+        {"id": "users", "title": "Users"},
+        {"id": "roles", "title": "Roles"},
+        {"id": "integrations", "title": "Integrations"},
+        {"id": "audit", "title": "Audit"},
+        {"id": "system_health", "title": "System Health"},
+    ],
+    "auditor": [
+        {"id": "audit_trail_search", "title": "Audit Trail Search"},
+        {"id": "hash_chain_verifier", "title": "Hash-Chain Verifier"},
+        {"id": "export", "title": "Export"},
+    ],
+}
+
+
+class DashboardView(APIView):
+    """``GET /api/v1/me/dashboard`` — role dashboard skeleton for the current user.
+
+    Returns an empty-state panel list for the user's primary role.
+    Panels are populated by feature phases; Phase 1 ships the structure only.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=["Current User"],
+        summary="Get role dashboard skeleton",
+        operation_id="current_user_dashboard",
+        responses={
+            200: _success_envelope(
+                "DashboardResponse",
+                {
+                    "role": serializers.CharField(allow_blank=True),
+                    "panels": serializers.ListField(
+                        child=inline_serializer(
+                            name="DashboardPanel",
+                            fields={
+                                "id": serializers.CharField(),
+                                "title": serializers.CharField(),
+                                "data": serializers.JSONField(default=None, allow_null=True),
+                                "status": serializers.CharField(default="not_implemented"),
+                            },
+                        )
+                    ),
+                },
+            ),
+            401: _error_envelope("DashboardUnauthorizedError"),
+        },
+    )
+    def get(self, request):
+        payload = request.auth or {}
+        roles = rbac.get_nbes_role_names(payload)
+        primary_role = roles[0] if roles else ""
+
+        raw_panels = _DASHBOARD_PANELS.get(primary_role, [])
+        panels = [
+            {"id": p["id"], "title": p["title"], "data": None, "status": "not_implemented"}
+            for p in raw_panels
+        ]
+
+        return _envelope(
+            {"role": primary_role, "panels": panels},
+            request_id=getattr(request, "request_id", ""),
+        )

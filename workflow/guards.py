@@ -76,9 +76,12 @@ def is_moderation_panel_member(instance) -> bool:
 def nlems_eligibility_verified(instance) -> bool:
     """
     Registration can only move to pending_payment after NLEMS has confirmed
-    LLB + LPT eligibility.
+    LLB + LPT eligibility. Checks candidate.eligibility_status (not Registration).
     """
-    return getattr(instance, "eligibility_status", "") == "eligible"
+    candidate = getattr(instance, "candidate", None)
+    if candidate is None:
+        return False
+    return getattr(candidate, "eligibility_status", "") == "eligible"
 
 
 def payment_confirmed(instance) -> bool:
