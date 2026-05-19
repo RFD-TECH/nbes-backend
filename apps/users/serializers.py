@@ -1,4 +1,5 @@
 """apps/users/serializers.py — Input/output shapes for the RBAC admin API."""
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from .models import Permission, Role
@@ -19,6 +20,7 @@ class RoleSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "description", "is_active", "permissions", "created_at"]
         read_only_fields = ["id", "permissions", "created_at"]
 
+    @extend_schema_field(serializers.ListField(child=serializers.CharField()))
     def get_permissions(self, obj):
         return sorted(obj.grants.values_list("permission__codename", flat=True))
 

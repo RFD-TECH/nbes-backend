@@ -30,7 +30,7 @@ THIRD_PARTY_APPS = [
 ]
 
 LOCAL_APPS = [
-    "shared",
+    "shared.apps.SharedConfig",
     "apps.users",
     "apps.committee",
     "apps.itembank",
@@ -149,17 +149,6 @@ SPECTACULAR_SETTINGS = {
     "SERVE_INCLUDE_SCHEMA": False,
     "SCHEMA_PATH_PREFIX": r"/api/v1",
     "COMPONENT_SPLIT_REQUEST": True,
-    "APPEND_COMPONENTS": {
-        "securitySchemes": {
-            "BearerAuth": {
-                "type": "http",
-                "scheme": "bearer",
-                "bearerFormat": "JWT",
-                "description": "JWT access token. Use: Authorization: Bearer <token>.",
-            },
-        },
-    },
-    "SECURITY": [{"BearerAuth": []}],
     "TAGS": [
         {"name": "RBAC Admin", "description": "Manage NBES role and permission mapping."},
         {"name": "Current User", "description": "Inspect the current user's NBES permissions."},
@@ -224,14 +213,3 @@ SYSTEM_21_URL = os.environ.get("SYSTEM_21_URL", "")
 SYSTEM_21_API_KEY = os.environ.get("SYSTEM_21_API_KEY", "")
 NLEMS_URL = os.environ.get("NLEMS_URL", "")
 NLEMS_API_KEY = os.environ.get("NLEMS_API_KEY", "")
-
-# ── API docs ──────────────────────────────────────────────────────────────────
-SPECTACULAR_SETTINGS = {
-    "TITLE": "National Bar Examination System API",
-    "DESCRIPTION": (
-        "NBES Core Platform — System 10A. "
-        "See SYSTEM_ARCHITECTURE.md for full domain documentation."
-    ),
-    "VERSION": "1.0.0",
-    "SERVE_INCLUDE_SCHEMA": False,
-}

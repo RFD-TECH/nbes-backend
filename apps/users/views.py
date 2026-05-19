@@ -1,5 +1,4 @@
 """apps/users/views.py — NBES RBAC admin endpoints.
-
 All endpoints require an authenticated user with the ``rbac:manage``
 permission (held by ``system-administrator`` per the seed). Every mutation
 emits an AuditEvent and invalidates the in-process role cache so the
@@ -12,7 +11,6 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import serializers
 from rest_framework.views import APIView
-
 from apps.audit.models import AuditEvent
 from shared import rbac
 from shared.permissions import HasPermission
@@ -122,6 +120,7 @@ class PermissionListView(APIView):
     @extend_schema(
         tags=["RBAC Admin"],
         summary="List NBES permission codenames",
+        operation_id="rbac_permission_list",
         description="Returns the seeded permission catalog. Codenames are declared in code.",
         responses={
             200: _success_envelope(
@@ -160,6 +159,7 @@ class RoleListCreateView(APIView):
     @extend_schema(
         tags=["RBAC Admin"],
         summary="List NBES-recognised roles",
+        operation_id="rbac_role_list",
         responses={
             200: _success_envelope(
                 "RoleListResponse",
@@ -184,6 +184,7 @@ class RoleListCreateView(APIView):
     @extend_schema(
         tags=["RBAC Admin"],
         summary="Register an IAM role in NBES",
+        operation_id="rbac_role_create",
         description="Creates or updates the local NBES role registry entry. It does not create the role in Keycloak.",
         request=CreateRoleSerializer,
         responses={
@@ -245,6 +246,7 @@ class RoleDetailView(APIView):
     @extend_schema(
         tags=["RBAC Admin"],
         summary="Get a role",
+        operation_id="rbac_role_retrieve",
         responses={
             200: _success_envelope_with_serializer("RoleDetailResponse", RoleSerializer()),
             404: _error_envelope("RoleNotFoundError"),
@@ -259,6 +261,7 @@ class RoleDetailView(APIView):
     @extend_schema(
         tags=["RBAC Admin"],
         summary="Update a role",
+        operation_id="rbac_role_update",
         request=inline_serializer(
             name="RolePatchRequest",
             fields={
@@ -296,6 +299,7 @@ class RoleDetailView(APIView):
     @extend_schema(
         tags=["RBAC Admin"],
         summary="Deactivate a role",
+        operation_id="rbac_role_deactivate",
         responses={
             200: _success_envelope_with_serializer(
                 "RoleDeactivateResponse",
@@ -343,6 +347,7 @@ class RolePermissionsView(APIView):
     @extend_schema(
         tags=["RBAC Admin"],
         summary="Get role permission grants",
+        operation_id="rbac_role_permissions_retrieve",
         responses={
             200: _success_envelope(
                 "RolePermissionsResponse",
@@ -378,6 +383,7 @@ class RolePermissionsView(APIView):
     @extend_schema(
         tags=["RBAC Admin"],
         summary="Replace role permission grants",
+        operation_id="rbac_role_permissions_update",
         request=UpdateRolePermissionsSerializer,
         responses={
             200: _success_envelope(
@@ -462,6 +468,7 @@ class MyPermissionsView(APIView):
     @extend_schema(
         tags=["Current User"],
         summary="Get current user's resolved NBES permissions",
+        operation_id="current_user_permissions",
         responses={
             200: _success_envelope(
                 "MyPermissionsResponse",
