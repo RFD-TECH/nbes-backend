@@ -35,41 +35,41 @@ PERMISSIONS = [
 
 # (role_name, description)
 ROLES = [
-    ("nbec-member",          "NBEC Member"),
-    ("nbec-secretariat",     "NBEC Secretariat"),
-    ("item-writer",          "Item Writer"),
+    ("nbec_member",          "NBEC Member"),
+    ("nbec_secretariat",     "NBEC Secretariat"),
+    ("item_writer",          "Item Writer"),
     ("moderator",            "Moderator"),
     ("examiner",             "Examiner"),
-    ("clet-registrar",       "CLET Registrar"),
+    ("clet_registrar",       "CLET Registrar"),
     ("candidate",            "Candidate"),
     ("auditor",              "Auditor"),
-    ("system-administrator", "NBES System Administrator"),
+    ("system_administrator", "NBES System Administrator"),
 ]
 
 # permission codename -> list of role names that hold it.
 # Source of truth: nbes-backend SKILL.md §3 RBAC Matrix.
 MATRIX = {
-    "item:create":                       ["item-writer"],
-    "item:approve":                      ["nbec-member", "moderator"],
-    "item:vault:export":                 ["nbec-member"],
-    "sitting:configure":                 ["nbec-member"],
-    "sitting:lock:override":             ["nbec-member"],
-    "registration:eligibility:override": ["clet-registrar"],
+    "item:create":                       ["item_writer"],
+    "item:approve":                      ["nbec_member", "moderator"],
+    "item:vault:export":                 ["nbec_member"],
+    "sitting:configure":                 ["nbec_member"],
+    "sitting:lock:override":             ["nbec_member"],
+    "registration:eligibility:override": ["clet_registrar"],
     "registration:self":                 ["candidate"],
     "marking:moderate":                  ["moderator"],
     "marking:second_mark":               ["examiner"],
-    "marking:arbitrate":                 ["nbec-member"],
-    "results:ratify":                    ["nbec-member"],
-    "results:publish:approve":           ["clet-registrar"],
+    "marking:arbitrate":                 ["nbec_member"],
+    "results:ratify":                    ["nbec_member"],
+    "results:publish:approve":           ["clet_registrar"],
     "results:view:own":                  ["candidate"],
     "resit:register":                    ["candidate"],
-    "resit:exception:grant":             ["nbec-member"],
-    "cert:trigger":                      ["clet-registrar"],
-    "audit:export":                      ["nbec-member", "auditor"],
-    "committee:manage":                  ["nbec-member", "nbec-secretariat"],
-    "sla:view":                          ["nbec-member", "nbec-secretariat", "clet-registrar"],
-    "reporting:view":                    ["nbec-member", "nbec-secretariat"],
-    "rbac:manage":                       ["system-administrator"],
+    "resit:exception:grant":             ["nbec_member"],
+    "cert:trigger":                      ["clet_registrar"],
+    "audit:export":                      ["nbec_member", "auditor"],
+    "committee:manage":                  ["nbec_member", "nbec_secretariat"],
+    "sla:view":                          ["nbec_member", "nbec_secretariat", "clet_registrar"],
+    "reporting:view":                    ["nbec_member", "nbec_secretariat"],
+    "rbac:manage":                       ["system_administrator"],
 }
 
 
