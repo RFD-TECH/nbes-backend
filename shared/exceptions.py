@@ -34,6 +34,7 @@ from django_fsm import TransitionNotAllowed
 from rest_framework.views import exception_handler
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.exceptions import APIException
 
 
 def nbes_exception_handler(exc, context):
@@ -58,15 +59,37 @@ def nbes_exception_handler(exc, context):
     # Fall through to DRF's default handler for all other exceptions
     response = exception_handler(exc, context)
 
+    if response is None:
+        return Response(
+            {
+                "success": False,
+                "error": {
+                    "code": "SERVER_ERROR",
+                    "message": "Internal server error.",
+                },
+                "meta": {"request_id": request_id},
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
     if response is not None:
         error_code = _get_error_code(response.status_code)
-        error_detail = response.data
+        error_detail = (
+            response.data.copy()
+            if isinstance(response.data, dict)
+            else response.data
+        )
 
         # Separate field-level errors from top-level messages
         fields = None
         message = str(exc)
+        if isinstance(exc, APIException):
+            message = str(exc.detail)
         if isinstance(error_detail, dict):
             non_field = error_detail.pop("non_field_errors", None)
+            detail = error_detail.pop("detail", None)
+            if detail:
+                message = str(detail)
             if error_detail:
                 fields = {
                     k: [str(e) for e in v] if isinstance(v, list) else str(v)
