@@ -153,6 +153,7 @@ SPECTACULAR_SETTINGS = {
         {"name": "RBAC Admin", "description": "Manage NBES role and permission mapping."},
         {"name": "Current User", "description": "Inspect the current user's NBES permissions and dashboard."},
         {"name": "Audit", "description": "Search and verify the append-only audit trail (Auditor / Administrator only)."},
+        {"name": "NBEC Committee", "description": "NBEC member register, meetings, agendas, minutes, and conflict-of-interest declarations (Phase 2 — NBE-F01)."},
     ],
 }
 

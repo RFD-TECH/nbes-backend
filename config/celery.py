@@ -46,4 +46,16 @@ app.conf.beat_schedule = {
         "schedule": crontab(hour=1, minute=0),
         "options": {"queue": "marking-high"},
     },
+    # Expire NBEC members whose tenure_end_date has passed — daily at 00:30 UTC
+    "committee-tenure-monitor": {
+        "task": "apps.committee.tasks.monitor_tenure_expiry",
+        "schedule": crontab(hour=0, minute=30),
+        "options": {"queue": "sla-monitor"},
+    },
+    # Escalate overdue action items — daily at 01:30 UTC
+    "committee-overdue-actions": {
+        "task": "apps.committee.tasks.escalate_overdue_actions",
+        "schedule": crontab(hour=1, minute=30),
+        "options": {"queue": "sla-monitor"},
+    },
 }

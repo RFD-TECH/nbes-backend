@@ -5,19 +5,33 @@ from django.utils import timezone
 
 
 class NBECMember(models.Model):
-    """NBEC member register. Keycloak sub links to identity."""
+    """NBEC member register. Keycloak sub links to identity in IAM."""
+
     class Role(models.TextChoices):
         CHAIR = "chair", "Chair"
+        DEPUTY_CHAIR = "deputy_chair", "Deputy Chair"
         MEMBER = "member", "Member"
         SECRETARY = "secretary", "Secretary"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        ACTIVE = "active", "Active"
+        EXPIRED = "expired", "Expired"
+        RENEWED = "renewed", "Renewed"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     keycloak_sub = models.UUIDField(unique=True)
     full_name = models.CharField(max_length=255)
+    title = models.CharField(max_length=50, blank=True)       # e.g. "Prof.", "Dr."
+    post_nominals = models.CharField(max_length=100, blank=True)  # e.g. "FCIArb, LLM"
     email = models.EmailField()
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.MEMBER)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    # Appointment instrument reference — letter/gazette ref from appointing authority
+    instrument_ref = models.CharField(max_length=100, unique=True, null=True, blank=True)
     appointment_date = models.DateField()
     tenure_end_date = models.DateField(null=True, blank=True)
+    photo_ref = models.TextField(blank=True)   # MinIO object key
     is_active = models.BooleanField(default=True)
     is_voting_member = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -25,25 +39,60 @@ class NBECMember(models.Model):
 
     class Meta:
         db_table = "committee_nbecmember"
+        constraints = [
+            # At most one active Chair at a time
+            models.UniqueConstraint(
+                fields=["role"],
+                condition=models.Q(role="chair", status="active"),
+                name="unique_active_chair",
+            )
+        ]
 
     def __str__(self):
         return f"{self.full_name} ({self.get_role_display()})"
 
+    def activate(self):
+        if self.status not in (self.Status.DRAFT, self.Status.RENEWED):
+            raise ValueError(f"Cannot activate member in status '{self.status}'.")
+        self.status = self.Status.ACTIVE
+        self.is_active = True
+        self.save(update_fields=["status", "is_active", "updated_at"])
+
+    def expire(self):
+        self.status = self.Status.EXPIRED
+        self.is_active = False
+        self.save(update_fields=["status", "is_active", "updated_at"])
+
 
 class Meeting(models.Model):
-    """NBEC meeting with quorum enforcement."""
+    """NBEC meeting — lifecycle from Draft through to Minuted."""
+
+    class MeetingType(models.TextChoices):
+        ORDINARY = "ordinary", "Ordinary"
+        EXTRAORDINARY = "extraordinary", "Extraordinary"
+        CLOSED = "closed", "Closed"
+
     class Status(models.TextChoices):
-        SCHEDULED = "scheduled", "Scheduled"
+        DRAFT = "draft", "Draft"
+        AGENDA_ISSUED = "agenda_issued", "Agenda Issued"
+        SCHEDULED = "scheduled", "Scheduled"   # kept for backward compat
         CONVENED = "convened", "Convened"
         ADJOURNED = "adjourned", "Adjourned"
+        MINUTED = "minuted", "Minuted"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     reference = models.CharField(max_length=50, unique=True)
+    meeting_type = models.CharField(
+        max_length=20, choices=MeetingType.choices, default=MeetingType.ORDINARY
+    )
     scheduled_date = models.DateTimeField()
     venue = models.CharField(max_length=255, blank=True)
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.SCHEDULED)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
     quorum_required = models.PositiveSmallIntegerField(default=5)
-    attendees = models.JSONField(default=list)  # list of keycloak_sub UUIDs
+    attendees = models.JSONField(default=list)   # list of keycloak_sub UUID strings
+    # Presiding chair and recording secretariat (keycloak subs)
+    chair_id = models.UUIDField(null=True, blank=True)
+    secretariat_id = models.UUIDField(null=True, blank=True)
     convened_at = models.DateTimeField(null=True, blank=True)
     adjourned_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -59,15 +108,43 @@ class Meeting(models.Model):
         return len(self.attendees) >= self.quorum_required
 
 
+class Agenda(models.Model):
+    """Versioned agenda for a meeting. Each published agenda increments version."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    meeting = models.ForeignKey(Meeting, on_delete=models.PROTECT, related_name="agendas")
+    version = models.PositiveSmallIntegerField(default=1)
+    # [{order, title, description, presenter_id, duration_minutes}]
+    items = models.JSONField(default=list)
+    document_ref = models.TextField(blank=True)  # MinIO object key for PDF
+    published_at = models.DateTimeField(null=True, blank=True)
+    created_by_id = models.UUIDField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "committee_agenda"
+        unique_together = [("meeting", "version")]
+        ordering = ["meeting", "-version"]
+
+    def __str__(self):
+        return f"Agenda v{self.version} — {self.meeting.reference}"
+
+
 class Minutes(models.Model):
-    """Meeting minutes — immutable once Chair approves."""
+    """Meeting minutes — immutable once the Chair digitally signs."""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     meeting = models.OneToOneField(Meeting, on_delete=models.PROTECT, related_name="minutes")
     content = models.TextField()
     approved = models.BooleanField(default=False)
-    approved_by_id = models.UUIDField(null=True, blank=True)  # Chair keycloak_sub
+    approved_by_id = models.UUIDField(null=True, blank=True)   # Chair keycloak_sub
     approved_at = models.DateTimeField(null=True, blank=True)
-    document_ref = models.TextField(blank=True)  # MinIO object key
+    document_ref = models.TextField(blank=True)   # MinIO object key (draft PDF)
+    # Set when Chair signs; row becomes immutable from this point
+    immutable_at = models.DateTimeField(null=True, blank=True)
+    signature_ref = models.CharField(max_length=200, blank=True)  # signature artefact ref
+    # System 05 archive reference assigned after archival
+    archive_ref = models.CharField(max_length=200, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -75,30 +152,71 @@ class Minutes(models.Model):
         db_table = "committee_minutes"
         verbose_name_plural = "minutes"
 
-    def approve(self, chair_id: str):
-        """Approve minutes — immutable from this point."""
+    def sign(self, chair_id: str, signature_ref: str = ""):
+        """Sign and immutably seal the minutes."""
         if self.approved:
-            raise ValueError("Minutes are already approved and cannot be changed.")
+            raise ValueError("Minutes are already signed and cannot be changed.")
         self.approved = True
         self.approved_by_id = chair_id
         self.approved_at = timezone.now()
-        self.save()
+        self.immutable_at = timezone.now()
+        self.signature_ref = signature_ref
+        self.save(update_fields=["approved", "approved_by_id", "approved_at",
+                                 "immutable_at", "signature_ref", "updated_at"])
+
+
+class MinutesAddendum(models.Model):
+    """Addendum to signed minutes — issued by Chair when correction needed post-sign."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    minutes = models.ForeignKey(Minutes, on_delete=models.PROTECT, related_name="addenda")
+    content = models.TextField()
+    issued_by_id = models.UUIDField()    # Chair keycloak_sub
+    issued_at = models.DateTimeField(default=timezone.now)
+    document_ref = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "committee_minutesaddendum"
+        ordering = ["minutes", "issued_at"]
+
+    def __str__(self):
+        return f"Addendum to {self.minutes.meeting.reference} at {self.issued_at:%Y-%m-%d}"
 
 
 class ConflictDeclaration(models.Model):
-    """Conflict-of-interest declaration — auto-excludes member from affected decisions."""
+    """COI declaration — auto-excludes member from affected decisions."""
+
     class Status(models.TextChoices):
         PENDING = "pending", "Pending Review"
         APPROVED = "approved", "Approved"
         DISMISSED = "dismissed", "Dismissed"
 
+    class SubjectType(models.TextChoices):
+        CANDIDATE = "candidate", "Candidate"
+        ITEM_WRITER = "item_writer", "Item Writer"
+        EXAMINER = "examiner", "Examiner"
+        SUPPLIER = "supplier", "Supplier"
+        OTHER = "other", "Other"
+
+    class Nature(models.TextChoices):
+        FINANCIAL = "financial", "Financial"
+        PERSONAL = "personal", "Personal"
+        PROFESSIONAL = "professional", "Professional"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     member = models.ForeignKey(NBECMember, on_delete=models.PROTECT, related_name="conflicts")
+    subject_type = models.CharField(
+        max_length=20, choices=SubjectType.choices, default=SubjectType.OTHER
+    )
     subject_description = models.TextField()
-    # Link to affected entity (item, application, etc.) — generic UUID reference
+    nature = models.CharField(max_length=20, choices=Nature.choices, blank=True)
+    # Generic reference to the affected entity (item, application, etc.)
     affected_entity_type = models.CharField(max_length=100, blank=True)
     affected_entity_id = models.UUIDField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    effective_from = models.DateField(null=True, blank=True)
+    review_date = models.DateField(null=True, blank=True)
     declared_at = models.DateTimeField(auto_now_add=True)
     reviewed_at = models.DateTimeField(null=True, blank=True)
     reviewed_by_id = models.UUIDField(null=True, blank=True)
@@ -111,21 +229,31 @@ class ConflictDeclaration(models.Model):
 
 
 class ActionItem(models.Model):
-    """Action item from a meeting."""
+    """Action item arising from a meeting, recorded in the minutes."""
+
     class Status(models.TextChoices):
         OPEN = "open", "Open"
         IN_PROGRESS = "in_progress", "In Progress"
         COMPLETE = "complete", "Complete"
+        VERIFIED = "verified", "Verified"
         OVERDUE = "overdue", "Overdue"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     meeting = models.ForeignKey(Meeting, on_delete=models.PROTECT, related_name="action_items")
+    # Minutes FK — set once minutes are created for this meeting
+    minutes = models.ForeignKey(
+        Minutes, on_delete=models.SET_NULL, null=True, blank=True, related_name="action_items"
+    )
     description = models.TextField()
-    assigned_to_id = models.UUIDField()  # keycloak_sub
+    assigned_to_id = models.UUIDField()     # keycloak_sub of assignee
     due_date = models.DateField()
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.OPEN)
     completed_at = models.DateTimeField(null=True, blank=True)
+    last_escalated_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = "committee_actionitem"
+
+    def __str__(self):
+        return f"Action [{self.status}]: {self.description[:60]}"
