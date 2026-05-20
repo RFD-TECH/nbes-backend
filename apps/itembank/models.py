@@ -12,6 +12,7 @@ and vault access/export auditing.
 import uuid
 from django.db import models
 from django.conf import settings
+from django.utils.translation import gettext_lazy as _
 
 
 class Item(models.Model):
@@ -31,7 +32,19 @@ class Item(models.Model):
     - audit_hash: optional hash used for auditing integrity.
     """
 
+    ITEM_TYPES = [
+        ("mcq", _("Multiple Choice")),
+        ("essay", _("Essay")),
+        ("short_answer", _("Short Answer")),
+        ("practical", _("Practical")),
+        ("multiple_response", _("Multiple Response")),
+    ]
+    objects = models.Manager()
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    item_type = models.CharField(
+        max_length=50, choices=ITEM_TYPES, default="mcq", verbose_name=_("Item Type")
+    )
     current_version_id = models.UUIDField(
         null=True,
         blank=True,
@@ -65,6 +78,11 @@ class Item(models.Model):
     )
     audit_hash = models.CharField(max_length=256, null=True, blank=True)
 
+    def __str__(self):
+        item_type = getattr(self, "item_type", "item")
+        status = getattr(self, "status", "unknown")
+        return f"{str(item_type).upper()} Item {self.id} ({status})"
+
 
 class ItemVersion(models.Model):
     """Stores a historical version of an Item.
@@ -76,6 +94,8 @@ class ItemVersion(models.Model):
     - asset_refs: list of referenced asset identifiers.
     - saved_by / saved_at: audit information for who saved it and when.
     """
+
+    objects = models.Manager()
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     item_id = models.ForeignKey(
@@ -89,7 +109,7 @@ class ItemVersion(models.Model):
     asset_refs = models.JSONField(default=list)  # Maps to asset_refs[]
     saved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING)
     saved_at = models.DateTimeField(auto_now_add=True)
-    
+
     class Meta:
         constraints = [
             models.UniqueConstraint(
@@ -97,6 +117,10 @@ class ItemVersion(models.Model):
                 name="unique_item_version_per_item",
             )
         ]
+
+    def __str__(self):
+        item_id = getattr(self, "item_id_id", None)
+        return f"Version {self.version_no} for Item {item_id}"
 
 
 class ItemComment(models.Model):
@@ -127,6 +151,9 @@ class ItemComment(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING
     )
 
+    def __str__(self):
+        return f"Comment on {self.anchor_path} ({self.status})"
+
 
 class ItemTransition(models.Model):
     """Records a state transition for an Item.
@@ -137,6 +164,8 @@ class ItemTransition(models.Model):
     - justification: optional freeform reason.
     - occurred_at: timestamp of the transition.
     """
+
+    objects = models.Manager()
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     item_id = models.ForeignKey(
@@ -149,6 +178,9 @@ class ItemTransition(models.Model):
     actor_id = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING)
     justification = models.TextField(null=True, blank=True)
     occurred_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Transition {self.from_state} -> {self.to_state} on {self.occurred_at}"
 
 
 class PanelVote(models.Model):
@@ -247,6 +279,9 @@ class Paper(models.Model):
     variants = models.JSONField(default=list)  # Maps to variants[]
     blueprint_ref = models.CharField(max_length=255)
     status = models.CharField(max_length=50)
+
+    def __str__(self):
+        return f"Paper {self.id} - {self.sitting_ref}"
 
 
 class ItemUsage(models.Model):

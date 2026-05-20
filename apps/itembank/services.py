@@ -2,7 +2,8 @@
 
 import uuid
 from django.db import transaction
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError, ObjectDoesNotExist
+from django.contrib.auth import get_user_model
 
 from .models import Item, ItemTransition, ItemVersion
 from apps.audit.models import AuditEvent
@@ -26,21 +27,38 @@ def create_or_update_item_draft(
     """
     # Extract version-specific data that belongs on ItemVersion, not Item.
     content = data.pop("content", None)
-    asset_refs = data.pop("asset_refs", [])
+    # Use None as the sentinel so omitted asset_refs do not wipe existing refs.
+    asset_refs = data.pop("asset_refs", None)
+
+    # Resolve author to a local User model instance (maps Keycloak `sub` to user.pk).
+    User = get_user_model()
+    try:
+        author_user = User.objects.get(keycloak_sub=author_auth["sub"])
+    except ObjectDoesNotExist as exc:
+        raise ObjectDoesNotExist("Author user not found for provided auth sub") from exc
 
     if not item_id:
         # Create a brand new draft item.
         item = Item.objects.create(
-            author_id_id=author_auth["sub"],
+            author_id=author_user,
             status="Draft",
             **data,
         )
         version_no = 1
+
+        # Audit the initial draft creation so the item lifecycle starts with a
+        # tamper-evident event in the platform audit log.
+        AuditEvent.record(
+            actor_id=author_auth["sub"],
+            action="ITEM_DRAFT_CREATED",
+            entity_type="item",
+            entity_id=str(item.id),
+            old_state=None,
+            new_state={"status": "Draft"},
+        )
     else:
         # Lock the existing item before updating it.
-        item = Item.objects.select_for_update().get(
-            id=item_id, author_id_id=author_auth["sub"]
-        )
+        item = Item.objects.select_for_update().get(id=item_id, author_id=author_user)
 
         if item.status not in ["Draft", "Revised"]:
             raise ValueError("You can only auto-save items in Draft or Revised states.")
@@ -51,6 +69,10 @@ def create_or_update_item_draft(
 
         if content is None:
             content = last_version.content if last_version else ""
+
+        # If asset_refs omitted in an autosave, preserve the previous version refs.
+        if asset_refs is None:
+            asset_refs = last_version.asset_refs if last_version else []
 
         # Update the item-level metadata.
         for key, value in data.items():
@@ -68,13 +90,17 @@ def create_or_update_item_draft(
         "blueprint_ref": item.blueprint_ref,
     }
 
+    # For new items, default asset_refs to empty list if none provided.
+    if asset_refs is None:
+        asset_refs = []
+
     new_version = ItemVersion.objects.create(
         item_id=item,
         version_no=version_no,
         content=content,
         metadata_snapshot=metadata_snapshot,
         asset_refs=asset_refs,
-        saved_by_id=author_auth["sub"],
+        saved_by=author_user,
     )
 
     # Link the item to the newly created active version.
@@ -96,10 +122,15 @@ def submit_item_for_review(item_id: str, author_auth: dict) -> Item:
     Returns:
         The submitted Item instance.
     """
+    # Resolve author to a local User model instance (maps Keycloak `sub` to user.pk).
+    User = get_user_model()
+    try:
+        author_user = User.objects.get(keycloak_sub=author_auth["sub"])
+    except ObjectDoesNotExist as exc:
+        raise ObjectDoesNotExist("Author user not found for provided auth sub") from exc
+
     # Fetch and lock the item row for a safe state transition.
-    item = Item.objects.select_for_update().get(
-        id=item_id, author_id_id=author_auth["sub"]
-    )
+    item = Item.objects.select_for_update().get(id=item_id, author_id=author_user)
 
     # Ensure only draft-like states can be submitted.
     if item.status not in ["Draft", "Revised"]:
@@ -125,7 +156,7 @@ def submit_item_for_review(item_id: str, author_auth: dict) -> Item:
         item_id=item,
         from_state=old_status,
         to_state="Submitted",
-        actor_id_id=author_auth["sub"],
+        actor_id=author_user,
         justification="Item submitted for peer review",
     )
 

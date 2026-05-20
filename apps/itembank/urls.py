@@ -12,7 +12,12 @@ urlpatterns
 
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import ItemAuthoringViewSet, AssetViewSet
+from .views import (
+    AssetViewSet,
+    ItemAuthoringViewSet,
+    PaperConstructionViewSet,
+    VaultOperationsViewSet,
+)
 
 # Create a default router for viewset registration. The DefaultRouter will
 # automatically create routes for list, create, retrieve, update, partial
@@ -24,6 +29,8 @@ router = DefaultRouter()
 # provide a queryset or when custom naming is desired).
 router.register(r"items", ItemAuthoringViewSet, basename="item")
 router.register(r"assets", AssetViewSet, basename="asset")
+router.register(r"vault", VaultOperationsViewSet, basename="vault")
+router.register(r"papers", PaperConstructionViewSet, basename="paper")
 
 # URL patterns for the itembank app. Including `router.urls` injects all
 # automatically generated routes from the DefaultRouter into the project's
