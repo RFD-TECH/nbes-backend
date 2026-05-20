@@ -1,5 +1,5 @@
 # ── Core ────────────────────────────────────────────────────────────────────
-django
+django>=5
 djangorestframework
 django-environ
 PyJWT[crypto]
