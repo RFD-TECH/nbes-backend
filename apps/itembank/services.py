@@ -25,7 +25,7 @@ def create_or_update_item_draft(
         The saved Item instance.
     """
     # Extract version-specific data that belongs on ItemVersion, not Item.
-    content = data.pop("content")
+    content = data.pop("content", None)
     asset_refs = data.pop("asset_refs", [])
 
     if not item_id:
@@ -45,14 +45,17 @@ def create_or_update_item_draft(
         if item.status not in ["Draft", "Revised"]:
             raise ValueError("You can only auto-save items in Draft or Revised states.")
 
+        # Determine the next version number.
+        last_version = item.versions.order_by("-version_no").first()
+        version_no = last_version.version_no + 1 if last_version else 1
+
+        if content is None:
+            content = last_version.content if last_version else ""
+
         # Update the item-level metadata.
         for key, value in data.items():
             setattr(item, key, value)
         item.save()
-
-        # Determine the next version number.
-        last_version = item.versions.order_by("-version_no").first()
-        version_no = last_version.version_no + 1 if last_version else 1
 
     # Capture a metadata snapshot for the version record.
     metadata_snapshot = {

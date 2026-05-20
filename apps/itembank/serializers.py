@@ -48,11 +48,11 @@ class ItemDraftSerializer(serializers.Serializer):
     difficulty = serializers.CharField(max_length=50, required=False, allow_blank=True)
 
     # Estimated time (in seconds) to answer the item. Nullable/optional.
-    time = serializers.IntegerField(required=False, allow_null=True)
+    time = serializers.IntegerField(required=False, allow_null=True, min_value=1)
 
     # Marks/weight allocated to the item. Uses Decimal to preserve precision.
     marks = serializers.DecimalField(
-        max_digits=5, decimal_places=2, required=False, allow_null=True
+        max_digits=5, decimal_places=2, required=False, allow_null=True, min_value=0.01
     )
 
     # Optional provenance and blueprint references

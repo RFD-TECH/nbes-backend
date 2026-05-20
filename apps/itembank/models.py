@@ -42,10 +42,10 @@ class Item(models.Model):
         null=True,
         blank=True,
     )
-    subject = models.CharField(max_length=255)
-    topic = models.CharField(max_length=255)
-    difficulty = models.CharField(max_length=50)
-    cognitive_level = models.CharField(max_length=50)
+    subject = models.CharField(max_length=255, null=True, blank=True)
+    topic = models.CharField(max_length=255, null=True, blank=True)
+    difficulty = models.CharField(max_length=50, null=True, blank=True)
+    cognitive_level = models.CharField(max_length=50, null=True, blank=True)
     marks = models.DecimalField(
         max_digits=5,
         decimal_places=2,
@@ -89,6 +89,14 @@ class ItemVersion(models.Model):
     asset_refs = models.JSONField(default=list)  # Maps to asset_refs[]
     saved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING)
     saved_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["item_id", "version_no"],
+                name="unique_item_version_per_item",
+            )
+        ]
 
 
 class ItemComment(models.Model):
