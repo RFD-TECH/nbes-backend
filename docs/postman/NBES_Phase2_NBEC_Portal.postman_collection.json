@@ -1,0 +1,667 @@
+{
+  "info": {
+    "name": "NBES — Phase 2: NBEC Management Portal",
+    "description": "All 14 endpoints for the NBEC Management Portal (NBE-F01).\n\n**Auth**: Set `bearer_token` in collection variables.\n- Dev mode: generate an HS256 token using the script in the Pre-request Scripts tab.\n- Keycloak mode: obtain a token from IAM and paste it.\n\n**Flow order for a full demo run**:\n1. Create Member → copy `data.id` into `member_id`\n2. Activate Member\n3. Declare COI → copy `data.id` into `coi_id`\n4. Review COI\n5. Schedule Meeting → copy `data.id` into `meeting_id`\n6. Publish Agenda\n7. Record Attendance\n8. Convene Meeting\n9. Adjourn Meeting → copy `data.minutes_id` (if auto-created) or create Minutes manually, then set `minutes_id`\n10. Sign Minutes\n11. Issue Addendum\n12. COI Policy Check",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url",     "value": "http://localhost:8003",       "type": "string" },
+    { "key": "bearer_token", "value": "",                             "type": "string",  "description": "Paste Keycloak RS256 token or leave blank to use the dev JWT pre-request script." },
+    { "key": "member_id",    "value": "",                             "type": "string",  "description": "Set after Create Member." },
+    { "key": "coi_id",       "value": "",                             "type": "string",  "description": "Set after Declare COI." },
+    { "key": "meeting_id",   "value": "",                             "type": "string",  "description": "Set after Schedule Meeting." },
+    { "key": "minutes_id",   "value": "",                             "type": "string",  "description": "Set after meeting is adjourned and minutes are created." },
+    { "key": "dev_jwt_secret","value": "shared-jwt-secret-between-iam-and-nbes", "type": "string", "description": "Matches JWT_SECRET_KEY in .env — dev mode only." },
+    { "key": "keycloak_url",  "value": "http://keycloak:8080",              "type": "string",  "description": "Keycloak base URL. Requires 127.0.0.1 keycloak in Windows hosts file." }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{bearer_token}}", "type": "string" }]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Dev-mode JWT generator — only runs when bearer_token is empty.",
+          "// Requires the 'jsrsasign' library available in Postman's sandbox.",
+          "// Generates an HS256 token with nbec_secretariat role.",
+          "if (!pm.collectionVariables.get('bearer_token')) {",
+          "    const secret = pm.collectionVariables.get('dev_jwt_secret');",
+          "    const header  = { alg: 'HS256', typ: 'JWT' };",
+          "    const payload = {",
+          "        sub:   '00000000-0000-0000-0000-000000000001',",
+          "        email: 'secretariat@nbec.gov.gh',",
+          "        realm_access: { roles: ['nbec_secretariat'] },",
+          "        iat: Math.floor(Date.now() / 1000),",
+          "        exp: Math.floor(Date.now() / 1000) + 3600",
+          "    };",
+          "    const encode = (obj) => btoa(JSON.stringify(obj))",
+          "        .replace(/=/g,'').replace(/\\+/g,'-').replace(/\\//g,'_');",
+          "    const sigInput = encode(header) + '.' + encode(payload);",
+          "    // NOTE: Postman sandbox does not support HMAC natively.",
+          "    // Paste a pre-generated token into bearer_token instead,",
+          "    // or use the /token helper request below.",
+          "    pm.collectionVariables.set('_sig_input', sigInput);",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Authentication",
+      "description": "Step-by-step authentication flow using real Keycloak tokens.\n\n**Run Step 1 first** — it fetches a token from Keycloak and automatically saves it to `bearer_token`. All subsequent requests in this collection use that token.\n\nPrerequisites:\n- Keycloak running at http://localhost:8080\n- `testsecretary` user created in the `clet-internal` realm with `nbec_secretariat` client role assigned under `nbes-api`\n- nbes-backend running at http://localhost:8003",
+      "item": [
+        {
+          "name": "Step 1 — Get Token from Keycloak",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string'));",
+                  "if (body.access_token) {",
+                  "    pm.collectionVariables.set('bearer_token', body.access_token);",
+                  "    pm.test('bearer_token saved to collection variables ✓', () => true);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "password",        "type": "text" },
+                { "key": "client_id",  "value": "nbes-test",       "type": "text" },
+                { "key": "username",   "value": "testsecretary",   "type": "text" },
+                { "key": "password",   "value": "password",        "type": "text" }
+              ]
+            },
+            "url": {
+              "raw": "{{keycloak_url}}/realms/clet-internal/protocol/openid-connect/token",
+              "host": ["{{keycloak_url}}"],
+              "path": ["realms", "clet-internal", "protocol", "openid-connect", "token"]
+            },
+            "description": "Authenticates `testsecretary` against Keycloak and saves the RS256 `access_token` to the `bearer_token` collection variable.\n\nAll other requests in this collection inherit `Bearer {{bearer_token}}` automatically — you only need to run this once per session (tokens expire in 5 minutes by default).\n\n**After running**: check the Test Results tab — you should see `bearer_token saved to collection variables ✓`."
+          }
+        },
+        {
+          "name": "Step 2 — Verify Token Works (List Members)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/members/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "members", ""]
+            },
+            "description": "Confirms the token is accepted by the NBES backend.\n\n**Expected**: 200 with `{ success: true, data: { results: [] } }` (empty list — no members yet).\n\nIf you get 401 → token is missing or expired (re-run Step 1).\nIf you get 403 → role is not recognised (check the `nbes-api nbec_secretariat` client role is assigned in Keycloak)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "1. Members",
+      "item": [
+        {
+          "name": "Create Member",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('member_id', body.data.id);",
+                  "    pm.test('member_id saved: ' + body.data.id, () => pm.expect(body.data.id).to.be.a('string'));",
+                  "}",
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('success flag', () => pm.expect(pm.response.json().success).to.be.true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"keycloak_sub\": \"aaaaaaaa-0000-0000-0000-000000000001\",\n  \"full_name\": \"Prof. Kwame Asante\",\n  \"title\": \"Prof.\",\n  \"post_nominals\": \"LLB, FCIArb\",\n  \"email\": \"k.asante@nbec.gov.gh\",\n  \"role\": \"member\",\n  \"instrument_ref\": \"INST/2026/001\",\n  \"appointment_date\": \"2026-01-01\",\n  \"tenure_end_date\": \"2029-12-31\",\n  \"is_voting_member\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/members/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "members", ""]
+            },
+            "description": "Creates a new NBEC member in DRAFT status.\n\n**Required fields**: keycloak_sub, full_name, email, role, appointment_date\n**Roles**: chair | deputy_chair | member | secretary\n\nStatus 201 on success. Saves `member_id` to collection variables automatically."
+          }
+        },
+        {
+          "name": "Create Chair (to test active-chair conflict)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"keycloak_sub\": \"bbbbbbbb-0000-0000-0000-000000000002\",\n  \"full_name\": \"Dr. Ama Owusu\",\n  \"title\": \"Dr.\",\n  \"email\": \"a.owusu@nbec.gov.gh\",\n  \"role\": \"chair\",\n  \"instrument_ref\": \"INST/2026/CHAIR\",\n  \"appointment_date\": \"2026-01-01\",\n  \"tenure_end_date\": \"2029-12-31\",\n  \"is_voting_member\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/members/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "members", ""]
+            },
+            "description": "Creates a Chair. After activating, attempting to activate a second Chair will return 400 (unique_active_chair constraint)."
+          }
+        },
+        {
+          "name": "Amend Member",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"full_name\": \"Prof. Kwame Asante-Mensah\",\n  \"post_nominals\": \"LLB, FCIArb, LLM\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/members/{{member_id}}/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "members", "{{member_id}}", ""]
+            },
+            "description": "Partial update — send only the fields you want to change. All fields are optional."
+          }
+        },
+        {
+          "name": "Activate Member",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status is active', () => pm.expect(pm.response.json().data.status).to.equal('active'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "" },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/members/{{member_id}}/activate/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "members", "{{member_id}}", "activate", ""]
+            },
+            "description": "Moves member from DRAFT → ACTIVE.\n\nReturns 400 if:\n- Member is not in DRAFT or RENEWED status\n- Member is a Chair and another Chair is already ACTIVE (unique_active_chair constraint)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Conflict of Interest (COI)",
+      "item": [
+        {
+          "name": "Declare COI",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('coi_id', body.data.id);",
+                  "    pm.test('coi_id saved: ' + body.data.id, () => pm.expect(body.data.id).to.be.a('string'));",
+                  "}",
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('status is pending', () => pm.expect(pm.response.json().data.status).to.equal('pending'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"member\": \"{{member_id}}\",\n  \"subject_type\": \"candidate\",\n  \"subject_description\": \"This candidate is my former student and I have a personal relationship.\",\n  \"nature\": \"personal\",\n  \"affected_entity_type\": \"candidate\",\n  \"effective_from\": \"2026-05-19\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/coi/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "coi", ""]
+            },
+            "description": "Member self-declares a conflict of interest. Creates a COI in PENDING status.\n\n**subject_type**: candidate | item_writer | examiner | supplier | other\n**nature**: financial | personal | professional"
+          }
+        },
+        {
+          "name": "Review COI — Approve",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status is approved', () => pm.expect(pm.response.json().data.status).to.equal('approved'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approved\": true,\n  \"review_date\": \"2026-05-19\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/coi/{{coi_id}}/review/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "coi", "{{coi_id}}", "review", ""]
+            },
+            "description": "Secretariat approves the COI declaration. Status moves PENDING → APPROVED."
+          }
+        },
+        {
+          "name": "Review COI — Dismiss",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approved\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/coi/{{coi_id}}/review/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "coi", "{{coi_id}}", "review", ""]
+            },
+            "description": "Secretariat dismisses the COI. Status moves PENDING → DISMISSED."
+          }
+        },
+        {
+          "name": "COI Policy Check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const data = pm.response.json().data;",
+                  "pm.test('has_active_conflict is boolean', () => pm.expect(data.has_active_conflict).to.be.a('boolean'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/policy/coi/?member_id={{member_id}}&entity_type=candidate",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "policy", "coi", ""],
+              "query": [
+                { "key": "member_id",   "value": "{{member_id}}" },
+                { "key": "entity_type", "value": "candidate" },
+                { "key": "entity_id",   "value": "", "disabled": true, "description": "Optional — filter by specific entity UUID" }
+              ]
+            },
+            "description": "Internal policy check — used by moderation and marking services to check if a member has an active approved COI against a candidate or other entity before assignment.\n\n**Required params**: member_id, entity_type\n**entity_type**: candidate | item | examiner | supplier | other\n\nReturns `has_active_conflict: true/false` and list of `conflict_ids`."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Meetings",
+      "item": [
+        {
+          "name": "Schedule Meeting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('meeting_id', body.data.id);",
+                  "    pm.test('meeting_id saved: ' + body.data.id, () => pm.expect(body.data.id).to.be.a('string'));",
+                  "}",
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('status is draft', () => pm.expect(pm.response.json().data.status).to.equal('draft'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"NBEC/MTG/2026/001\",\n  \"meeting_type\": \"ordinary\",\n  \"scheduled_date\": \"2026-06-15T10:00:00Z\",\n  \"venue\": \"CLET Boardroom, 8th Floor, Ridge Tower\",\n  \"quorum_required\": 3,\n  \"chair_id\": \"bbbbbbbb-0000-0000-0000-000000000002\",\n  \"secretariat_id\": \"00000000-0000-0000-0000-000000000001\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/meetings/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "meetings", ""]
+            },
+            "description": "Schedules a new NBEC meeting in DRAFT status.\n\n**meeting_type**: ordinary | extraordinary | closed\n**quorum_required**: minimum number of members that must be present to convene\n\nSaves `meeting_id` to collection variables automatically."
+          }
+        },
+        {
+          "name": "Publish Agenda",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('version is 1', () => pm.expect(pm.response.json().data.version).to.equal(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"order\": 1,\n      \"title\": \"Opening and Apologies\",\n      \"description\": \"Chair opens the meeting and records apologies.\",\n      \"duration_minutes\": 5\n    },\n    {\n      \"order\": 2,\n      \"title\": \"Confirmation of Previous Minutes\",\n      \"description\": \"Members confirm the minutes of the last ordinary meeting.\",\n      \"duration_minutes\": 10\n    },\n    {\n      \"order\": 3,\n      \"title\": \"Item Bank Review — May 2026 Sitting\",\n      \"description\": \"Review and approve pending items for the May 2026 sitting paper.\",\n      \"presenter_id\": \"aaaaaaaa-0000-0000-0000-000000000001\",\n      \"duration_minutes\": 45\n    },\n    {\n      \"order\": 4,\n      \"title\": \"Any Other Business\",\n      \"duration_minutes\": 10\n    }\n  ],\n  \"document_ref\": \"\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/meetings/{{meeting_id}}/agenda/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "meetings", "{{meeting_id}}", "agenda", ""]
+            },
+            "description": "Publishes agenda version 1. Call again to publish a revised version (v2, v3...).\n\nMeeting status advances from DRAFT → AGENDA_ISSUED.\n\nEach item can have: order (required), title (required), description, presenter_id (UUID), duration_minutes."
+          }
+        },
+        {
+          "name": "Publish Agenda — Revised (v2)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\n    {\n      \"order\": 1,\n      \"title\": \"Opening and Apologies\",\n      \"duration_minutes\": 5\n    },\n    {\n      \"order\": 2,\n      \"title\": \"Confirmation of Previous Minutes\",\n      \"duration_minutes\": 10\n    },\n    {\n      \"order\": 3,\n      \"title\": \"Item Bank Review — May 2026 Sitting\",\n      \"duration_minutes\": 45\n    },\n    {\n      \"order\": 4,\n      \"title\": \"Conflict of Interest Declarations\",\n      \"description\": \"Members to declare any new conflicts before proceeding.\",\n      \"duration_minutes\": 10\n    },\n    {\n      \"order\": 5,\n      \"title\": \"Any Other Business\",\n      \"duration_minutes\": 10\n    }\n  ],\n  \"document_ref\": \"agendas/NBEC-MTG-2026-001-v2.pdf\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/meetings/{{meeting_id}}/agenda/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "meetings", "{{meeting_id}}", "agenda", ""]
+            },
+            "description": "Publishes a revised agenda. Version auto-increments to 2. All previous versions are retained."
+          }
+        },
+        {
+          "name": "Record Attendance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('attendees recorded', () => pm.expect(pm.response.json().data.attendees.length).to.be.above(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"attendee_ids\": [\n    \"aaaaaaaa-0000-0000-0000-000000000001\",\n    \"bbbbbbbb-0000-0000-0000-000000000002\",\n    \"cccccccc-0000-0000-0000-000000000003\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/meetings/{{meeting_id}}/attendance/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "meetings", "{{meeting_id}}", "attendance", ""]
+            },
+            "description": "Records which members are present. `attendee_ids` is a list of keycloak_sub UUIDs.\n\nThe list replaces (not appends to) the current attendees. Must meet `quorum_required` before the meeting can be convened."
+          }
+        },
+        {
+          "name": "Convene Meeting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status is convened', () => pm.expect(pm.response.json().data.status).to.equal('convened'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "" },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/meetings/{{meeting_id}}/convene/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "meetings", "{{meeting_id}}", "convene", ""]
+            },
+            "description": "Convenes the meeting. Checks quorum — returns 400 if attendance < quorum_required.\n\nStatus: AGENDA_ISSUED → CONVENED."
+          }
+        },
+        {
+          "name": "Adjourn Meeting",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('status is adjourned', () => pm.expect(body.data.status).to.equal('adjourned'));",
+                  "if (body.data.minutes_id) {",
+                  "    pm.collectionVariables.set('minutes_id', body.data.minutes_id);",
+                  "    pm.test('minutes_id saved: ' + body.data.minutes_id, () => pm.expect(body.data.minutes_id).to.be.a('string'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "" },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/meetings/{{meeting_id}}/adjourn/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "meetings", "{{meeting_id}}", "adjourn", ""]
+            },
+            "description": "Adjourns the meeting. Status: CONVENED → ADJOURNED.\n\nReturns 400 if the meeting is not in CONVENED status."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Minutes",
+      "description": "Minutes are created automatically when a meeting is adjourned (if your service does that), or can be created directly via the DB/admin. Set `minutes_id` in collection variables before using these requests.",
+      "item": [
+        {
+          "name": "Sign Minutes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('approved is true', () => pm.expect(pm.response.json().data.approved).to.be.true);",
+                  "pm.test('immutable_at is set', () => pm.expect(pm.response.json().data.immutable_at).to.not.be.null);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"signature_ref\": \"signatures/NBEC-MTG-2026-001-chair.sig\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/minutes/{{minutes_id}}/sign/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "minutes", "{{minutes_id}}", "sign", ""]
+            },
+            "description": "Chair signs the minutes. Once signed:\n- `approved` = true\n- `immutable_at` is set — no further edits allowed\n- Meeting status advances to MINUTED\n- All pending action items are linked to these minutes\n\n`signature_ref` is optional — MinIO key or HSM reference of the signature artefact.\n\nReturns 400 if minutes are already signed."
+          }
+        },
+        {
+          "name": "Issue Addendum",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.test('content present', () => pm.expect(pm.response.json().data.content).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"Correction to Item 3 vote record: the motion to approve Paper NBEC-2026-MCQ-001 was carried unanimously (5-0), not 4-1 as originally recorded. All five present members voted in favour.\",\n  \"document_ref\": \"\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/minutes/{{minutes_id}}/addendum/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "minutes", "{{minutes_id}}", "addendum", ""]
+            },
+            "description": "Issues a post-signing addendum/correction. The original signed minutes are NOT modified — this creates a separate addendum record linked to them.\n\n`content` minimum 10 characters.\n\nReturns 400 if the minutes have not been signed yet."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Error Cases",
+      "description": "Requests that should return 4xx — useful for verifying validation and auth.",
+      "item": [
+        {
+          "name": "Create Member — 401 Unauthenticated",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"full_name\": \"Ghost\" }"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/members/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "members", ""]
+            },
+            "description": "Should return 401. No auth header."
+          }
+        },
+        {
+          "name": "Create Member — 400 Missing Required Fields",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"full_name\": \"Incomplete Member\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/members/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "members", ""]
+            },
+            "description": "Should return 400. Missing keycloak_sub, email, role, appointment_date."
+          }
+        },
+        {
+          "name": "Amend Member — 404 Not Found",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"full_name\": \"Nobody\" }"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/members/00000000-dead-beef-0000-000000000000/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "members", "00000000-dead-beef-0000-000000000000", ""]
+            },
+            "description": "Should return 404."
+          }
+        },
+        {
+          "name": "Convene Meeting — 400 Quorum Not Met",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": { "mode": "raw", "raw": "" },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/meetings/{{meeting_id}}/convene/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "meetings", "{{meeting_id}}", "convene", ""]
+            },
+            "description": "Should return 400 if fewer members than quorum_required are in attendance. Run this BEFORE recording attendance."
+          }
+        },
+        {
+          "name": "Sign Minutes — 400 Already Signed",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"signature_ref\": \"duplicate.sig\" }"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/minutes/{{minutes_id}}/sign/",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "minutes", "{{minutes_id}}", "sign", ""]
+            },
+            "description": "Should return 400 after minutes have already been signed."
+          }
+        },
+        {
+          "name": "COI Policy Check — 400 Missing member_id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/nbec/policy/coi/?entity_type=candidate",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "nbec", "policy", "coi", ""],
+              "query": [{ "key": "entity_type", "value": "candidate" }]
+            },
+            "description": "Should return 400 — member_id query param is required."
+          }
+        }
+      ]
+    }
+  ]
+}

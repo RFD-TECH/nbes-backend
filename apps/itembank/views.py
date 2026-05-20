@@ -3,8 +3,10 @@
 from datetime import timedelta
 
 from rest_framework import viewsets, status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser
+from rest_framework.response import Response
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.utils import timezone
 from shared.permissions import has_permission
@@ -140,7 +142,7 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
         except ValidationError as e:
             # Catches the Metadata Guard failure
             return error_response(
-                str(e.message), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+                str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
             )
 
     @action(detail=True, methods=["get"])
@@ -153,12 +155,21 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
 
             if v1_id and v2_id:
                 # Return exactly two versions for the side-by-side diff
-                versions = item.versions.filter(id__in=[v1_id, v2_id])
-                if versions.count() != 2:
+                version_list = list(item.versions.filter(id__in=[v1_id, v2_id]))
+                version_by_id = {str(version.id): version for version in version_list}
+                if len(version_list) != 2:
                     return error_response(
                         "One or both specified versions were not found.",
                         status_code=404,
                     )
+                v1 = version_by_id.get(v1_id)
+                v2 = version_by_id.get(v2_id)
+                if v1 is None or v2 is None:
+                    return error_response(
+                        "One or both specified versions were not found.",
+                        status_code=404,
+                    )
+                versions = [v1, v2]
             else:
                 # Return standard descending history list
                 versions = item.versions.all().order_by("-version_no")
@@ -208,7 +219,16 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
 
         try:
             # Verify the item actually exists
-            Item.objects.get(id=pk)
+            item = Item.objects.get(id=pk)
+
+            # Verify the provided version belongs to this item (prevent cross-item comments)
+            version_id = serializer.validated_data.get(
+                "item_version_id"
+            ) or request.data.get("item_version_id")
+            if version_id and not item.versions.filter(id=version_id).exists():
+                return error_response(
+                    "Version does not belong to this item.", status_code=400
+                )
 
             comment = serializer.save(created_by_id=request.auth["sub"])
             return success_response(
@@ -241,9 +261,13 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
                 data=serializer.validated_data,
                 actor_auth=request.auth,
             )
+            decision = serializer.validated_data["decision"]
+            past_tense = {"accept": "accepted", "decline": "declined"}.get(
+                decision, f"{decision}ed"
+            )
             return success_response(
                 data=result,
-                message=f"Suggestion {serializer.validated_data['decision']}ed.",
+                message=f"Suggestion {past_tense}.",
             )
         except ObjectDoesNotExist:
             return error_response("Item not found.", status_code=404)

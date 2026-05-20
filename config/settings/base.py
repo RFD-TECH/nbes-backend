@@ -6,7 +6,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 environ.Env.read_env(BASE_DIR / ".env")
 
-SECRET_KEY = os.environ.get("SECRET_KEY")
+SECRET_KEY = os.environ["SECRET_KEY"]
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost").split(",")
 
@@ -151,7 +151,9 @@ SPECTACULAR_SETTINGS = {
     "COMPONENT_SPLIT_REQUEST": True,
     "TAGS": [
         {"name": "RBAC Admin", "description": "Manage NBES role and permission mapping."},
-        {"name": "Current User", "description": "Inspect the current user's NBES permissions."},
+        {"name": "Current User", "description": "Inspect the current user's NBES permissions and dashboard."},
+        {"name": "Audit", "description": "Search and verify the append-only audit trail (Auditor / Administrator only)."},
+        {"name": "NBEC Committee", "description": "NBEC member register, meetings, agendas, minutes, and conflict-of-interest declarations (Phase 2 — NBE-F01)."},
     ],
 }
 
@@ -191,6 +193,29 @@ KEYCLOAK_REALM_URL = os.environ.get("KEYCLOAK_REALM_URL", "")
 # In dev (KEYCLOAK_ENABLED=False), this shared secret is used to validate JWTs.
 JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", SECRET_KEY)
 JWT_ALGORITHM = "HS256"
+
+# NBES's own backend client_id. Tokens for NBES must list this in `aud`,
+# and NBES reads its system roles from resource_access[NBES_CLIENT_ID].roles.
+NBES_CLIENT_ID = os.environ.get("NBES_CLIENT_ID", "nbes-api")
+
+# Service-account credentials used by shared/keycloak_admin.py to call the
+# Keycloak Admin API (e.g. revoking roles on tenure expiry). The client must
+# have the realm-management "manage-users" and "manage-realm" service roles.
+KEYCLOAK_ADMIN_CLIENT_ID = os.environ.get(
+    "KEYCLOAK_ADMIN_CLIENT_ID",
+    os.environ.get("KEYCLOAK_CLIENT_ID_INTERNAL", ""),
+)
+KEYCLOAK_ADMIN_CLIENT_SECRET = os.environ.get(
+    "KEYCLOAK_ADMIN_CLIENT_SECRET",
+    os.environ.get("KEYCLOAK_CLIENT_SECRET_INTERNAL", ""),
+)
+KEYCLOAK_VALID_AUDIENCES = [
+    value.strip()
+    for value in os.environ.get(
+        "KEYCLOAK_VALID_AUDIENCES", NBES_CLIENT_ID
+    ).split(",")
+    if value.strip()
+]
 
 # ── Vault ─────────────────────────────────────────────────────────────────────
 VAULT_DEV_MODE = os.environ.get("VAULT_DEV_MODE", "True") == "True"

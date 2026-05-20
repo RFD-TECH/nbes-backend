@@ -5,7 +5,11 @@ emits an AuditEvent and invalidates the in-process role cache so the
 change takes effect within 60 s for every NBES node.
 """
 from django.db import transaction
-from drf_spectacular.utils import extend_schema, inline_serializer
+from drf_spectacular.utils import (
+    OpenApiExample,
+    extend_schema,
+    inline_serializer,
+)
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -96,6 +100,17 @@ def _error_envelope(name):
                 fields={"request_id": serializers.CharField()},
             ),
         },
+    )
+
+
+def _error_response(code, message, status_code, request_id=""):
+    return Response(
+        {
+            "success": False,
+            "error": {"code": code, "message": message},
+            "meta": {"request_id": str(request_id)},
+        },
+        status=status_code,
     )
 
 
@@ -194,8 +209,15 @@ class RoleListCreateView(APIView):
 
         role, created = Role.objects.get_or_create(
             name=d["name"],
-            defaults={"description": d.get("description", "")},
+            defaults={"description": d.get("description", ""), "is_custom": True},
         )
+        if not created and not role.is_custom:
+            return _error_response(
+                "ROLE_LOCKED",
+                "Seeded NBES roles cannot be updated or deleted.",
+                status.HTTP_403_FORBIDDEN,
+                getattr(request, "request_id", ""),
+            )
         if not created and d.get("description") and not role.description:
             role.description = d["description"]
             role.save(update_fields=["description", "updated_at"])
@@ -270,6 +292,13 @@ class RoleDetailView(APIView):
         role, err = self._get(pk)
         if err:
             return err
+        if not role.is_custom:
+            return _error_response(
+                "ROLE_LOCKED",
+                "Seeded NBES roles cannot be updated or deleted.",
+                status.HTTP_403_FORBIDDEN,
+                getattr(request, "request_id", ""),
+            )
 
         before = {"description": role.description, "is_active": role.is_active}
         if "description" in request.data:
@@ -304,6 +333,13 @@ class RoleDetailView(APIView):
         role, err = self._get(pk)
         if err:
             return err
+        if not role.is_custom:
+            return _error_response(
+                "ROLE_LOCKED",
+                "Seeded NBES roles cannot be updated or deleted.",
+                status.HTTP_403_FORBIDDEN,
+                getattr(request, "request_id", ""),
+            )
 
         if not role.is_active:
             return _envelope(
@@ -454,6 +490,29 @@ class MyPermissionsView(APIView):
     Useful for clients to hide buttons before the API rejects them. The
     list reflects the *resolved* permissions after intersecting JWT roles
     with NBES's role registry — i.e. the same set the gateway enforces.
+
+    **Role resolution (post-migration architecture):**
+
+    1. NBES reads ``resource_access[<NBES_CLIENT_ID>].roles`` from the JWT —
+       the Keycloak *client roles* IAM assigns when the user is invited /
+       activated into NBES. ``NBES_CLIENT_ID`` defaults to ``nbes-api``.
+    2. If that claim is absent (legacy tokens issued before IAM cut over),
+       NBES falls back to ``realm_access.roles`` and emits a structured
+       warning ``rbac.legacy_realm_role_fallback`` so the fallback usage is
+       observable. The fallback will be removed in IAM Phase 7.
+    3. ``super_admin`` in ``realm_access.roles`` short-circuits to the
+       wildcard sentinel ``*``. This realm role stays a realm role; every
+       other system role becomes a client role.
+
+    **Audience verification.** Tokens for NBES must list ``nbes-api`` in
+    ``aud`` (the ``audience-resolve`` mapper on ``clet-iam-internal``
+    populates this automatically when the user holds NBES client roles).
+    Production NBES (``prod.py``) fails closed at boot if
+    ``KEYCLOAK_VALID_AUDIENCES`` is empty or missing ``nbes-api``.
+
+    The ``roles_in_jwt`` field in the response reflects whichever source
+    the resolver actually used — so an empty ``resource_access`` block on a
+    legacy token will surface here as the realm-role names.
     """
     permission_classes = [IsAuthenticated]
 
@@ -461,6 +520,18 @@ class MyPermissionsView(APIView):
         tags=["Current User"],
         summary="Get current user's resolved NBES permissions",
         operation_id="current_user_permissions",
+        description=(
+            "Returns the resolved NBES permission set for the bearer of "
+            "the JWT.\n\n"
+            "**Resolution order:**\n"
+            "1. `resource_access[nbes-api].roles` — Keycloak client roles "
+            "(target architecture).\n"
+            "2. `realm_access.roles` — legacy fallback; logged for "
+            "migration tracking.\n"
+            "3. `super_admin` in `realm_access.roles` → wildcard `*`.\n\n"
+            "**Audience:** the token's `aud` claim must include the value "
+            "of `NBES_CLIENT_ID` (default `nbes-api`)."
+        ),
         responses={
             200: _success_envelope(
                 "MyPermissionsResponse",
@@ -476,6 +547,69 @@ class MyPermissionsView(APIView):
             ),
             401: _error_envelope("MyPermissionsUnauthorizedError"),
         },
+        examples=[
+            OpenApiExample(
+                name="Examiner — client-role path (target)",
+                description=(
+                    "User has `nbes-api/examiner` as a Keycloak client role. "
+                    "Token's `resource_access['nbes-api'].roles` includes "
+                    "`examiner`. NBES resolves `examiner` against its local "
+                    "RolePermission table."
+                ),
+                value={
+                    "success": True,
+                    "data": {
+                        "sub": "11111111-1111-1111-1111-111111111111",
+                        "email": "examiner@example.com",
+                        "roles_in_jwt": ["examiner"],
+                        "roles_recognised_by_nbes": ["examiner"],
+                        "permissions": [
+                            "marking:moderate",
+                            "marking:score"
+                        ],
+                    },
+                    "meta": {"request_id": "0e1e..."},
+                },
+            ),
+            OpenApiExample(
+                name="Super admin — realm-role wildcard",
+                description=(
+                    "`super_admin` in `realm_access.roles` short-circuits "
+                    "to wildcard. Token does not need `resource_access[nbes-api]`."
+                ),
+                value={
+                    "success": True,
+                    "data": {
+                        "sub": "22222222-2222-2222-2222-222222222222",
+                        "email": "root@example.com",
+                        "roles_in_jwt": [],
+                        "roles_recognised_by_nbes": [],
+                        "permissions": ["*"],
+                    },
+                    "meta": {"request_id": "..."},
+                },
+            ),
+            OpenApiExample(
+                name="Legacy fallback — pre-migration token",
+                description=(
+                    "Token carries `realm_access.roles=['examiner']` but no "
+                    "`resource_access[nbes-api]`. NBES still resolves it via "
+                    "the realm-role fallback path AND emits "
+                    "`rbac.legacy_realm_role_fallback` to logs."
+                ),
+                value={
+                    "success": True,
+                    "data": {
+                        "sub": "33333333-3333-3333-3333-333333333333",
+                        "email": "legacy@example.com",
+                        "roles_in_jwt": ["examiner"],
+                        "roles_recognised_by_nbes": ["examiner"],
+                        "permissions": ["marking:moderate", "marking:score"],
+                    },
+                    "meta": {"request_id": "..."},
+                },
+            ),
+        ],
     )
     def get(self, request):
         payload = request.auth or {}
@@ -493,5 +627,121 @@ class MyPermissionsView(APIView):
                 "roles_recognised_by_nbes": known_roles,
                 "permissions": permissions,
             },
+            request_id=getattr(request, "request_id", ""),
+        )
+
+
+# ── role dashboard skeletons ────────────────────────────────────────────────
+
+_DASHBOARD_PANELS = {
+    "nbec-member": [
+        {"id": "meeting_agenda", "title": "Meeting Agenda"},
+        {"id": "pending_approvals", "title": "Pending Approvals"},
+        {"id": "conflict_declarations", "title": "Conflict Declarations"},
+        {"id": "audit_trail_viewer", "title": "Audit Trail"},
+    ],
+    "nbec-secretariat": [
+        {"id": "committee_operations", "title": "Committee Operations"},
+        {"id": "candidate_registration_desk", "title": "Candidate Registration Desk"},
+        {"id": "exception_queue", "title": "Exception Queue"},
+    ],
+    "item-writer": [
+        {"id": "my_items", "title": "My Items"},
+        {"id": "drafts", "title": "Drafts"},
+        {"id": "peer_review_feedback", "title": "Peer Review Feedback"},
+    ],
+    "moderator": [
+        {"id": "review_queue", "title": "Review Queue"},
+        {"id": "panel_decisions", "title": "Panel Decisions"},
+        {"id": "item_search", "title": "Item Search"},
+    ],
+    "examiner": [
+        {"id": "marking_queue", "title": "Marking Queue"},
+        {"id": "borderline_review_queue", "title": "Borderline Review Queue"},
+    ],
+    "candidate": [
+        {"id": "registration", "title": "Registration"},
+        {"id": "payment", "title": "Payment"},
+        {"id": "slip", "title": "Admission Slip"},
+        {"id": "results", "title": "Results"},
+        {"id": "remarking", "title": "Remarking"},
+    ],
+    "clet-registrar": [
+        {"id": "override_queue", "title": "Override Queue"},
+        {"id": "ratification_dashboard", "title": "Ratification Dashboard"},
+        {"id": "cert_trigger_panel", "title": "Certificate Trigger Panel"},
+    ],
+    "invigilator": [
+        {"id": "centre_operations", "title": "Centre Operations"},
+        {"id": "candidate_checkin", "title": "Candidate Check-In"},
+        {"id": "proctoring_queue", "title": "Proctoring Queue"},
+    ],
+    "centre-coordinator": [
+        {"id": "centre_operations", "title": "Centre Operations"},
+        {"id": "candidate_checkin", "title": "Candidate Check-In"},
+        {"id": "proctoring_queue", "title": "Proctoring Queue"},
+    ],
+    "system-administrator": [
+        {"id": "users", "title": "Users"},
+        {"id": "roles", "title": "Roles"},
+        {"id": "integrations", "title": "Integrations"},
+        {"id": "audit", "title": "Audit"},
+        {"id": "system_health", "title": "System Health"},
+    ],
+    "auditor": [
+        {"id": "audit_trail_search", "title": "Audit Trail Search"},
+        {"id": "hash_chain_verifier", "title": "Hash-Chain Verifier"},
+        {"id": "export", "title": "Export"},
+    ],
+}
+
+
+class DashboardView(APIView):
+    """``GET /api/v1/me/dashboard`` — role dashboard skeleton for the current user.
+
+    Returns an empty-state panel list for the user's primary role.
+    Panels are populated by feature phases; Phase 1 ships the structure only.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=["Current User"],
+        summary="Get role dashboard skeleton",
+        operation_id="current_user_dashboard",
+        responses={
+            200: _success_envelope(
+                "DashboardResponse",
+                {
+                    "role": serializers.CharField(allow_blank=True),
+                    "panels": serializers.ListField(
+                        child=inline_serializer(
+                            name="DashboardPanel",
+                            fields={
+                                "id": serializers.CharField(),
+                                "title": serializers.CharField(),
+                                "data": serializers.JSONField(default=None, allow_null=True),
+                                "status": serializers.CharField(default="not_implemented"),
+                            },
+                        )
+                    ),
+                },
+            ),
+            401: _error_envelope("DashboardUnauthorizedError"),
+        },
+    )
+    def get(self, request):
+        payload = request.auth or {}
+        roles = rbac.get_nbes_role_names(payload)
+        primary_role = roles[0] if roles else ""
+        dashboard_key = primary_role.replace("_", "-")
+
+        raw_panels = _DASHBOARD_PANELS.get(dashboard_key, [])
+        panels = [
+            {"id": p["id"], "title": p["title"], "data": None, "status": "not_implemented"}
+            for p in raw_panels
+        ]
+
+        return _envelope(
+            {"role": primary_role, "panels": panels},
             request_id=getattr(request, "request_id", ""),
         )

@@ -34,8 +34,10 @@ def has_mandatory_metadata(instance):
 
     for field in mandatory_fields:
         value = getattr(instance, field, None)
+        if isinstance(value, str):
+            value = value.strip()
         # If the value is None, an empty string, or 0, it fails the check
-        if value in [None, "", 0]:
+        if value in (None, "", 0):
             return False
 
     return True
@@ -47,10 +49,42 @@ def has_valid_mcq_config(instance) -> bool:
     Non-MCQ items always pass this guard.
     TODO: Implement MCQ option validation.
     """
-    if instance.type != "mcq":
+    # Item model uses `item_type` field.
+    if getattr(instance, "item_type", None) != "mcq":
         return True
-    # TODO: validate instance.metadata["options"] structure
-    return True
+    # Try to validate the latest version content. We expect the front-end to
+    # serialize MCQ options into a JSON structure with an `options` list where
+    # each option may include an `is_correct` boolean. If the structure cannot
+    # be parsed, fail the guard to enforce SRS correctness rather than allow an
+    # underspecified MCQ into the review pipeline.
+    try:
+        import json
+
+        latest = getattr(instance, "versions", None)
+        if not latest:
+            return False
+        last_version = instance.versions.order_by("-version_no").first()
+        if not last_version or not last_version.content:
+            return False
+
+        payload = json.loads(last_version.content)
+        options = payload.get("options")
+        if not isinstance(options, list) or len(options) < 2:
+            return False
+
+        # Count options marked as correct. Support common keys.
+        correct_count = 0
+        for opt in options:
+            if isinstance(opt, dict) and (
+                opt.get("is_correct") is True or opt.get("correct") is True
+            ):
+                correct_count += 1
+
+        return correct_count == 1
+    except Exception:
+        # If parsing fails, treat as invalid to force authors to provide a
+        # structured MCQ payload that the system can verify.
+        return False
 
 
 def has_reviewer_assigned(instance) -> bool:
@@ -92,9 +126,12 @@ def is_moderation_panel_member(instance) -> bool:
 def nlems_eligibility_verified(instance) -> bool:
     """
     Registration can only move to pending_payment after NLEMS has confirmed
-    LLB + LPT eligibility.
+    LLB + LPT eligibility. Checks candidate.eligibility_status (not Registration).
     """
-    return getattr(instance, "eligibility_status", "") == "eligible"
+    candidate = getattr(instance, "candidate", None)
+    if candidate is None:
+        return False
+    return getattr(candidate, "eligibility_status", "") == "eligible"
 
 
 def payment_confirmed(instance) -> bool:

@@ -2,20 +2,13 @@
 
 import uuid
 import logging
-from django.db import transaction
-from django.utils import timezone
 from datetime import timedelta
+from django.db import transaction
 from django.core.exceptions import ValidationError, ObjectDoesNotExist
-from .tasks import dispatch_item_status_notification
+from django.contrib.auth import get_user_model
+from django.utils import timezone
 
-from .models import (
-    Item,
-    ItemTransition,
-    ItemVersion,
-    ItemComment,
-    PanelVote,
-    VaultExportRequest,
-)
+from .models import Item, ItemTransition, ItemVersion, ItemComment
 from apps.audit.models import AuditEvent
 from workflow.guards import has_mandatory_metadata
 
@@ -38,34 +31,58 @@ def create_or_update_item_draft(
         The saved Item instance.
     """
     # Extract version-specific data that belongs on ItemVersion, not Item.
-    content = data.pop("content")
-    asset_refs = data.pop("asset_refs", [])
+    content = data.pop("content", None)
+    # Use None as the sentinel so omitted asset_refs do not wipe existing refs.
+    asset_refs = data.pop("asset_refs", None)
+
+    # Resolve author to a local User model instance (maps Keycloak `sub` to user.pk).
+    User = get_user_model()
+    try:
+        author_user = User.objects.get(keycloak_sub=author_auth["sub"])
+    except ObjectDoesNotExist as exc:
+        raise ObjectDoesNotExist("Author user not found for provided auth sub") from exc
 
     if not item_id:
         # Create a brand new draft item.
         item = Item.objects.create(
-            author_id_id=author_auth["sub"],
+            author_id=author_user,
             status="Draft",
             **data,
         )
         version_no = 1
+
+        # Audit the initial draft creation so the item lifecycle starts with a
+        # tamper-evident event in the platform audit log.
+        AuditEvent.record(
+            actor_id=author_auth["sub"],
+            action="ITEM_DRAFT_CREATED",
+            entity_type="item",
+            entity_id=str(item.id),
+            old_state=None,
+            new_state={"status": "Draft"},
+        )
     else:
         # Lock the existing item before updating it.
-        item = Item.objects.select_for_update().get(
-            id=item_id, author_id_id=author_auth["sub"]
-        )
+        item = Item.objects.select_for_update().get(id=item_id, author_id=author_user)
 
         if item.status not in ["Draft", "Revised"]:
             raise ValueError("You can only auto-save items in Draft or Revised states.")
+
+        # Determine the next version number.
+        last_version = item.versions.order_by("-version_no").first()
+        version_no = last_version.version_no + 1 if last_version else 1
+
+        if content is None:
+            content = last_version.content if last_version else ""
+
+        # If asset_refs omitted in an autosave, preserve the previous version refs.
+        if asset_refs is None:
+            asset_refs = last_version.asset_refs if last_version else []
 
         # Update the item-level metadata.
         for key, value in data.items():
             setattr(item, key, value)
         item.save()
-
-        # Determine the next version number.
-        last_version = item.versions.order_by("-version_no").first()
-        version_no = last_version.version_no + 1 if last_version else 1
 
     # Capture a metadata snapshot for the version record.
     metadata_snapshot = {
@@ -73,10 +90,15 @@ def create_or_update_item_draft(
         "topic": item.topic,
         "cognitive_level": item.cognitive_level,
         "difficulty": item.difficulty,
-        "marks": str(item.marks) if item.marks else None,
+        "marks": str(item.marks) if item.marks is not None else None,
         "time": item.time,
         "blueprint_ref": item.blueprint_ref,
+        "source": item.source,
     }
+
+    # For new items, default asset_refs to empty list if none provided.
+    if asset_refs is None:
+        asset_refs = []
 
     new_version = ItemVersion.objects.create(
         item_id=item,
@@ -84,7 +106,7 @@ def create_or_update_item_draft(
         content=content,
         metadata_snapshot=metadata_snapshot,
         asset_refs=asset_refs,
-        saved_by_id=author_auth["sub"],
+        saved_by=author_user,
     )
 
     # Link the item to the newly created active version.
@@ -106,10 +128,15 @@ def submit_item_for_review(item_id: str, author_auth: dict) -> Item:
     Returns:
         The submitted Item instance.
     """
+    # Resolve author to a local User model instance (maps Keycloak `sub` to user.pk).
+    User = get_user_model()
+    try:
+        author_user = User.objects.get(keycloak_sub=author_auth["sub"])
+    except ObjectDoesNotExist as exc:
+        raise ObjectDoesNotExist("Author user not found for provided auth sub") from exc
+
     # Fetch and lock the item row for a safe state transition.
-    item = Item.objects.select_for_update().get(
-        id=item_id, author_id_id=author_auth["sub"]
-    )
+    item = Item.objects.select_for_update().get(id=item_id, author_id=author_user)
 
     # Ensure only draft-like states can be submitted.
     if item.status not in ["Draft", "Revised"]:
@@ -135,7 +162,7 @@ def submit_item_for_review(item_id: str, author_auth: dict) -> Item:
         item_id=item,
         from_state=old_status,
         to_state="Submitted",
-        actor_id_id=author_auth["sub"],
+        actor_id=author_user,
         justification="Item submitted for peer review",
     )
 
@@ -257,10 +284,19 @@ def restore_item_version(item_id: str, version_id: str, actor_auth: dict) -> Ite
         ValueError: If validation fails or the requested historical
             version does not exist.
     """
-    item = Item.objects.select_for_update().get(id=item_id)
+    User = get_user_model()
+    try:
+        resolved_user = User.objects.get(keycloak_sub=actor_auth["sub"])
+    except ObjectDoesNotExist as exc:
+        raise ValueError("Author user not found for provided auth sub") from exc
+
+    try:
+        item = Item.objects.select_for_update().get(id=item_id)
+    except ObjectDoesNotExist as exc:
+        raise ValueError("Item not found.") from exc
 
     # Validation Constraints
-    if str(item.author_id_id) != actor_auth["sub"]:
+    if item.author_id_id != resolved_user.id:
         raise ValueError("Only the assigned author can restore item versions.")
     if item.status not in ["Draft", "Revised"]:
         raise ValueError(
@@ -283,7 +319,7 @@ def restore_item_version(item_id: str, version_id: str, actor_auth: dict) -> Ite
         content=historical_version.content,
         metadata_snapshot=historical_version.metadata_snapshot,
         asset_refs=historical_version.asset_refs,
-        saved_by_id=actor_auth["sub"],
+        saved_by=resolved_user,
     )
 
     # Revert Item metadata to match the restored snapshot
@@ -294,6 +330,8 @@ def restore_item_version(item_id: str, version_id: str, actor_auth: dict) -> Ite
     item.cognitive_level = snapshot.get("cognitive_level", item.cognitive_level)
     item.difficulty = snapshot.get("difficulty", item.difficulty)
     item.time = snapshot.get("time", item.time)
+    item.blueprint_ref = snapshot.get("blueprint_ref", item.blueprint_ref)
+    item.source = snapshot.get("source", item.source)
 
     marks_val = snapshot.get("marks")
     item.marks = float(marks_val) if marks_val else None
@@ -350,7 +388,16 @@ def process_suggestion_decision(
         ValueError: If validation fails or the suggestion cannot be
             located.
     """
-    item = Item.objects.select_for_update().get(id=item_id)
+    User = get_user_model()
+    try:
+        resolved_user = User.objects.get(keycloak_sub=actor_auth["sub"])
+    except ObjectDoesNotExist as exc:
+        raise ValueError("Author user not found for provided auth sub") from exc
+
+    try:
+        item = Item.objects.select_for_update().get(id=item_id)
+    except ObjectDoesNotExist as exc:
+        raise ValueError("Item not found.") from exc
 
     try:
         suggestion = ItemComment.objects.get(
@@ -360,7 +407,7 @@ def process_suggestion_decision(
         raise ValueError("Suggestion not found.") from exc
 
     # RBAC/State Validation
-    if str(item.author_id_id) != actor_auth["sub"]:
+    if item.author_id_id != resolved_user.id:
         raise ValueError("Only the Item Writer can accept or decline suggestions.")
     if item.status not in ["In Review", "Revised"]:
         raise ValueError(
@@ -380,7 +427,7 @@ def process_suggestion_decision(
             anchor_path=f"reply_to_{suggestion.id}",  # Links the rationale to the original suggestion
             body=f"[{data['decision'].upper()}] Rationale: {data['rationale']}",
             status="resolved",  # Replies are born resolved so they don't clutter the open queue
-            created_by_id=actor_auth["sub"],
+            created_by=resolved_user,
         )
 
     AuditEvent.record(
@@ -443,17 +490,30 @@ def check_and_escalate_overdue_reviews() -> int:
                 entry_transition.occurred_at,
             )
 
-            AuditEvent.record(
-                actor_id="SYSTEM",  # Triggered by the server, not a user
+            # Avoid duplicate SLA escalation audit events within the recent window
+            recent_since = timezone.now() - timedelta(days=1)
+            already_recorded = AuditEvent.objects.filter(
+                actor_id="SYSTEM",
                 action="SLA_ESCALATION_TRIGGERED",
                 entity_type="item",
                 entity_id=str(item.id),
-                new_state={
-                    "days_overdue": (timezone.now() - entry_transition.occurred_at).days
-                },
-            )
+                created_at__gte=recent_since,
+            ).exists()
 
-            escalated_count += 1
+            if not already_recorded:
+                AuditEvent.record(
+                    actor_id="SYSTEM",  # Triggered by the server, not a user
+                    action="SLA_ESCALATION_TRIGGERED",
+                    entity_type="item",
+                    entity_id=str(item.id),
+                    new_state={
+                        "days_overdue": (
+                            timezone.now() - entry_transition.occurred_at
+                        ).days
+                    },
+                )
+
+                escalated_count += 1
 
     return escalated_count
 
