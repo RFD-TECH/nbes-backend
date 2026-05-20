@@ -61,6 +61,7 @@ class AuditEvent(models.Model):
         previous_hash = last["chain_hash"] if last else "0" * 64
 
         event_id = kwargs.pop("event_id", uuid.uuid4())
+        created_at = kwargs.pop("created_at", timezone.now())
         payload = json.dumps({
             "event_id": str(event_id),
             "actor_id": str(kwargs.get("actor_id", "")),
@@ -68,7 +69,7 @@ class AuditEvent(models.Model):
             "entity_type": kwargs.get("entity_type", ""),
             "entity_id": str(kwargs.get("entity_id", "")),
             "new_state": kwargs.get("new_state", {}),
-            "created_at": timezone.now().isoformat(),
+            "created_at": created_at.isoformat(),
         }, sort_keys=True)
 
         chain_hash = hashlib.sha256(
@@ -79,6 +80,7 @@ class AuditEvent(models.Model):
             event_id=event_id,
             action=action,
             chain_hash=chain_hash,
+            created_at=created_at,
             **kwargs,
         )
 

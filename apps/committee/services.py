@@ -223,7 +223,7 @@ def publish_agenda(actor_id, meeting: Meeting, items: list, document_ref: str = 
 def record_attendance(actor_id, meeting: Meeting, attendee_ids: list, *,
                       request_id=None, ip_address=None) -> Meeting:
     """Record the list of attending member keycloak subs."""
-    meeting.attendees = [str(a) for a in attendee_ids]
+    meeting.attendees = list(dict.fromkeys(str(a) for a in attendee_ids))
     meeting.save(update_fields=["attendees"])
     _audit(actor_id, ev.MEETING_ATTENDANCE_RECORDED, "meeting", meeting.id,
            new_state={"attendee_count": len(attendee_ids)},
@@ -278,9 +278,8 @@ def adjourn_meeting(actor_id, meeting: Meeting, *,
     _audit(actor_id, ev.MEETING_ADJOURNED, "meeting", meeting.id,
            old_state={"status": "convened"}, new_state={"status": meeting.status},
            request_id=request_id, ip_address=ip_address)
-    return meeting, minutes
     publish("MeetingAdjourned", {"meeting_id": str(meeting.id)})
-    return meeting
+    return meeting, minutes
 
 
 # ── Minutes ───────────────────────────────────────────────────────────────────

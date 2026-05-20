@@ -17,7 +17,7 @@ from django.core.cache import cache
 logger = logging.getLogger(__name__)
 
 _ADMIN_TOKEN_CACHE_KEY = "nbes:keycloak:admin_token"
-_ADMIN_TOKEN_TTL = 55  # seconds — admin tokens are typically valid for 60 s
+_ADMIN_TOKEN_TTL_BUFFER = 15  # seconds to subtract from expires_in as safety margin
 
 
 def _realm_base() -> tuple[str, str]:
@@ -55,8 +55,11 @@ def _get_admin_token() -> str:
         timeout=10,
     )
     resp.raise_for_status()
-    token = resp.json()["access_token"]
-    cache.set(_ADMIN_TOKEN_CACHE_KEY, token, _ADMIN_TOKEN_TTL)
+    body = resp.json()
+    token = body["access_token"]
+    expires_in = int(body.get("expires_in", 60))
+    ttl = max(expires_in - _ADMIN_TOKEN_TTL_BUFFER, 1)
+    cache.set(_ADMIN_TOKEN_CACHE_KEY, token, ttl)
     return token
 
 

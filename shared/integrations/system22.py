@@ -15,6 +15,7 @@ import uuid
 
 import requests
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,10 @@ class System22Client:
         self.base_url = getattr(settings, "SYSTEM_22_URL", "").rstrip("/")
         self.api_key = getattr(settings, "SYSTEM_22_API_KEY", "")
         self._dev_mode = not self.base_url or not self.api_key
+        if self._dev_mode and not settings.DEBUG:
+            raise ImproperlyConfigured(
+                "SYSTEM_22_URL and SYSTEM_22_API_KEY are required when DEBUG=False."
+            )
 
     def export_audit_anchor(self, date: str, head_hash: str, event_count: int) -> str:
         """
@@ -53,7 +58,13 @@ class System22Client:
             timeout=15,
         )
         resp.raise_for_status()
-        return resp.json().get("anchor_ref", "")
+        anchor_ref = resp.json().get("anchor_ref", "")
+        if not anchor_ref:
+            raise ValueError(
+                f"System 22 returned no anchor_ref for date={date}; "
+                "export cannot be confirmed as durable."
+            )
+        return anchor_ref
 
     def send_security_event(self, event_type: str, payload: dict) -> None:
         """
@@ -68,9 +79,10 @@ class System22Client:
             )
             return
 
-        requests.post(
+        resp = requests.post(
             f"{self.base_url}/api/v1/security-events",
             json=body,
             headers={"Authorization": f"Bearer {self.api_key}"},
             timeout=10,
         )
+        resp.raise_for_status()

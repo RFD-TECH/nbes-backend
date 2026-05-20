@@ -14,11 +14,12 @@ def poll_outbox():
     from django.conf import settings
     from apps.audit.models import OutboxEvent
 
+    if settings.KAFKA_ENABLED:
+        raise RuntimeError("KAFKA_ENABLED is True but Kafka producer is not configured.")
+
     unpublished = OutboxEvent.objects.filter(published=False).order_by("created_at")[:100]
     for event in unpublished:
         try:
-            if settings.KAFKA_ENABLED:
-                raise NotImplementedError("Kafka producer not configured.")
             event.published = True
             event.published_at = timezone.now()
             event.save(update_fields=["published", "published_at"])
@@ -41,7 +42,11 @@ def export_daily_audit_anchor():
     from apps.audit.models import AuditEvent, DailyHashAnchor
     from shared.integrations.system22 import System22Client
 
-    yesterday = (timezone.now() - datetime.timedelta(days=1)).date()
+    now_utc = timezone.now()
+    yesterday = (now_utc - datetime.timedelta(days=1)).date()
+    day_start = datetime.datetime(yesterday.year, yesterday.month, yesterday.day,
+                                  tzinfo=datetime.timezone.utc)
+    day_end = day_start + datetime.timedelta(days=1)
 
     anchor, _ = DailyHashAnchor.objects.get_or_create(
         date=yesterday,
@@ -52,7 +57,9 @@ def export_daily_audit_anchor():
         logger.info("Audit anchor %s already exported — skipping.", yesterday)
         return
 
-    qs = AuditEvent.objects.filter(created_at__date=yesterday).order_by("id")
+    qs = AuditEvent.objects.filter(
+        created_at__gte=day_start, created_at__lt=day_end
+    ).order_by("id")
     count = qs.count()
 
     if count == 0:

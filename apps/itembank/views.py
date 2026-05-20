@@ -90,7 +90,7 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
         except ValidationError as e:
             # Catches the Metadata Guard failure
             return error_response(
-                str(e.message), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+                str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
             )
 
 

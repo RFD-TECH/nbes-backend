@@ -75,8 +75,13 @@ class System17Client:
         for attempt in range(3):
             try:
                 resp = requests.post(url, data=body, headers=headers, timeout=10)
+                if 400 <= resp.status_code < 500:
+                    raise IntegrationError(
+                        f"System17 POST {path} failed with {resp.status_code}: {resp.text}",
+                        retryable=False,
+                        correlation_id=correlation_id,
+                    )
                 if resp.status_code < 500:
-                    resp.raise_for_status()
                     return resp.json()
                 backoff = 2 ** attempt
                 logger.warning(
@@ -84,6 +89,8 @@ class System17Client:
                     path, resp.status_code, attempt + 1, backoff,
                 )
                 time.sleep(backoff)
+            except IntegrationError:
+                raise
             except requests.RequestException as exc:
                 if attempt == 2:
                     raise IntegrationError(

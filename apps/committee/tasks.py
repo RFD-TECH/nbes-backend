@@ -1,8 +1,10 @@
 """apps/committee/tasks.py — NBEC Committee Celery tasks."""
+import datetime
 import logging
 from datetime import date
 
 from celery import shared_task
+from django.db.models import Q
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -88,9 +90,11 @@ def escalate_overdue_actions():
     from .models import ActionItem
 
     today = date.today()
-    overdue = ActionItem.objects.filter(
-        status__in=[ActionItem.Status.OPEN, ActionItem.Status.IN_PROGRESS],
-        due_date__lt=today,
+    retry_cutoff = timezone.now() - datetime.timedelta(hours=24)
+    overdue = ActionItem.objects.filter(due_date__lt=today).filter(
+        Q(status__in=[ActionItem.Status.OPEN, ActionItem.Status.IN_PROGRESS])
+        | Q(status=ActionItem.Status.OVERDUE, last_escalated_at__isnull=True)
+        | Q(status=ActionItem.Status.OVERDUE, last_escalated_at__lt=retry_cutoff)
     )
     escalated_count = 0
     for item in overdue:

@@ -60,7 +60,7 @@ def create_or_update_item_draft(
         "topic": item.topic,
         "cognitive_level": item.cognitive_level,
         "difficulty": item.difficulty,
-        "marks": str(item.marks) if item.marks else None,
+        "marks": str(item.marks) if item.marks is not None else None,
         "time": item.time,
         "blueprint_ref": item.blueprint_ref,
     }

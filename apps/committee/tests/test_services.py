@@ -218,9 +218,10 @@ class TestMeetingLifecycle:
         services.record_attendance(ACTOR, meeting, ids)
         meeting.refresh_from_db()
         meeting = services.convene_meeting(ACTOR, meeting)
-        meeting = services.adjourn_meeting(ACTOR, meeting)
+        meeting, minutes = services.adjourn_meeting(ACTOR, meeting)
         assert meeting.status == Meeting.Status.ADJOURNED
         assert meeting.adjourned_at is not None
+        assert minutes.meeting_id == meeting.id
 
     def test_adjourn_not_convened_raises(self, meeting):
         with pytest.raises(ValueError):

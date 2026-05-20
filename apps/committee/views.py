@@ -427,7 +427,7 @@ class COIPolicyView(APIView):
     Requires ``committee:manage`` or ``audit:export`` — service principals use
     their own JWT with the relevant permission.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, has_permission("committee:manage")]
 
     @extend_schema(
         tags=["NBEC Committee"],

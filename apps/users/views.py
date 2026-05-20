@@ -733,8 +733,9 @@ class DashboardView(APIView):
         payload = request.auth or {}
         roles = rbac.get_nbes_role_names(payload)
         primary_role = roles[0] if roles else ""
+        dashboard_key = primary_role.replace("_", "-")
 
-        raw_panels = _DASHBOARD_PANELS.get(primary_role, [])
+        raw_panels = _DASHBOARD_PANELS.get(dashboard_key, [])
         panels = [
             {"id": p["id"], "title": p["title"], "data": None, "status": "not_implemented"}
             for p in raw_panels

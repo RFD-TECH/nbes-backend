@@ -32,7 +32,7 @@ class NBECMember(models.Model):
     appointment_date = models.DateField()
     tenure_end_date = models.DateField(null=True, blank=True)
     photo_ref = models.TextField(blank=True)   # MinIO object key
-    is_active = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=False)
     is_voting_member = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -105,7 +105,7 @@ class Meeting(models.Model):
 
     @property
     def quorum_met(self) -> bool:
-        return len(self.attendees) >= self.quorum_required
+        return len(set(self.attendees)) >= self.quorum_required
 
 
 class Agenda(models.Model):
