@@ -1,6 +1,6 @@
 services:
 
-  db:
+  nbes-db:
     image: postgres:16-alpine
     volumes:
       - nbes_postgres_data:/var/lib/postgresql/data
@@ -15,10 +15,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-    networks:
-      default:
-        aliases:
-          - nbes-db
 
   redis:
     image: redis:7-alpine
@@ -54,10 +50,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       KAFKA_ENABLED: "False"
       KEYCLOAK_ENABLED: "False"
+      KEYCLOAK_REALM_URL: "http://keycloak:8080/realms/clet-internal"
       VAULT_DEV_MODE: "True"
       TIME_ZONE: Africa/Accra
     depends_on:
-      db:
+      nbes-db:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -86,7 +83,7 @@ services:
       KEYCLOAK_ENABLED: "False"
       VAULT_DEV_MODE: "True"
     depends_on:
-      db:
+      nbes-db:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -116,7 +113,7 @@ services:
       KEYCLOAK_ENABLED: "False"
       VAULT_DEV_MODE: "True"
     depends_on:
-      db:
+      nbes-db:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -146,7 +143,7 @@ services:
       KEYCLOAK_ENABLED: "False"
       VAULT_DEV_MODE: "True"
     depends_on:
-      db:
+      nbes-db:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -176,7 +173,7 @@ services:
       KEYCLOAK_ENABLED: "False"
       VAULT_DEV_MODE: "True"
     depends_on:
-      db:
+      nbes-db:
         condition: service_healthy
       redis:
         condition: service_healthy

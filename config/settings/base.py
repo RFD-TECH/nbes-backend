@@ -197,6 +197,18 @@ JWT_ALGORITHM = "HS256"
 # NBES's own backend client_id. Tokens for NBES must list this in `aud`,
 # and NBES reads its system roles from resource_access[NBES_CLIENT_ID].roles.
 NBES_CLIENT_ID = os.environ.get("NBES_CLIENT_ID", "nbes-api")
+
+# Service-account credentials used by shared/keycloak_admin.py to call the
+# Keycloak Admin API (e.g. revoking roles on tenure expiry). The client must
+# have the realm-management "manage-users" and "manage-realm" service roles.
+KEYCLOAK_ADMIN_CLIENT_ID = os.environ.get(
+    "KEYCLOAK_ADMIN_CLIENT_ID",
+    os.environ.get("KEYCLOAK_CLIENT_ID_INTERNAL", ""),
+)
+KEYCLOAK_ADMIN_CLIENT_SECRET = os.environ.get(
+    "KEYCLOAK_ADMIN_CLIENT_SECRET",
+    os.environ.get("KEYCLOAK_CLIENT_SECRET_INTERNAL", ""),
+)
 KEYCLOAK_VALID_AUDIENCES = [
     value.strip()
     for value in os.environ.get(

@@ -258,8 +258,8 @@ def convene_meeting(actor_id, meeting: Meeting, *,
 
 @transaction.atomic
 def adjourn_meeting(actor_id, meeting: Meeting, *,
-                    request_id=None, ip_address=None) -> Meeting:
-    """Move meeting to Adjourned."""
+                    request_id=None, ip_address=None):
+    """Move meeting to Adjourned and create a draft Minutes record."""
     if meeting.status != Meeting.Status.CONVENED:
         raise ValueError(
             f"Cannot adjourn meeting in status '{meeting.status}'; must be Convened."
@@ -267,9 +267,18 @@ def adjourn_meeting(actor_id, meeting: Meeting, *,
     meeting.status = Meeting.Status.ADJOURNED
     meeting.adjourned_at = timezone.now()
     meeting.save(update_fields=["status", "adjourned_at"])
+    minutes = Minutes.objects.create(
+        meeting=meeting,
+        content=(
+            f"Draft minutes of {meeting.reference} "
+            f"({meeting.get_meeting_type_display()}) held on "
+            f"{meeting.scheduled_date.strftime('%d %B %Y')}."
+        ),
+    )
     _audit(actor_id, ev.MEETING_ADJOURNED, "meeting", meeting.id,
            old_state={"status": "convened"}, new_state={"status": meeting.status},
            request_id=request_id, ip_address=ip_address)
+    return meeting, minutes
     publish("MeetingAdjourned", {"meeting_id": str(meeting.id)})
     return meeting
 

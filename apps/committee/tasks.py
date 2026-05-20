@@ -7,15 +7,28 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+# Maps the committee role stored on NBECMember to the Keycloak realm role that
+# grants NBEC access. Revoked when tenure expires.
+_KEYCLOAK_ROLE_MAP = {
+    "chair":         "nbec_member",
+    "deputy_chair":  "nbec_member",
+    "member":        "nbec_member",
+    "secretary":     "nbec_secretariat",
+}
+
 
 @shared_task(queue="sla-monitor")
 def monitor_tenure_expiry():
     """Daily: expire NBECMember records whose tenure_end_date has passed.
 
     Runs every day at 00:30 UTC via Celery Beat (config/celery.py).
-    Members with tenure_end_date < today and status='active' are moved to Expired.
+    For each expired member:
+      1. DB status set to Expired and is_active=False.
+      2. Keycloak realm role revoked so IAM access is removed within 60 s.
+      3. AuditEvent recorded.
     """
     from apps.audit.models import AuditEvent
+    from shared.keycloak_admin import revoke_realm_role
     from . import events as ev
     from .models import NBECMember
 
@@ -28,6 +41,22 @@ def monitor_tenure_expiry():
     for member in due:
         try:
             member.expire()
+
+            # Revoke Keycloak role — best-effort; a failure here must not
+            # block the DB expiry or the audit record.
+            keycloak_role = _KEYCLOAK_ROLE_MAP.get(member.role)
+            if keycloak_role:
+                try:
+                    revoke_realm_role(str(member.keycloak_sub), keycloak_role)
+                except Exception:
+                    logger.exception(
+                        "monitor_tenure_expiry: Keycloak revoke failed for member %s "
+                        "(role=%s, sub=%s) — DB expiry recorded; manual revoke required.",
+                        member.id,
+                        keycloak_role,
+                        member.keycloak_sub,
+                    )
+
             AuditEvent.record(
                 actor_id=None,
                 action=ev.MEMBER_EXPIRED,

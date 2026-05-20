@@ -15,15 +15,30 @@ Reference: NBES System Architecture §3.1 — django-fsm guard conditions
 
 # ── Item Bank Guards ──────────────────────────────────────────────────────────
 
-def has_mandatory_metadata(instance) -> bool:
+
+def has_mandatory_metadata(instance):
     """
-    Item must have subject, topic, difficulty, cognitive_level, marks, and time
-    set in its metadata JSONB field before it can be submitted.
-    TODO: Implement metadata field validation.
+    Prevents submission until all mandatory metadata fields are completed.
+    Called before transition: Draft -> Submitted (or Revised -> Submitted)
     """
-    required_fields = ["subject", "topic", "difficulty", "cognitive_level", "marks", "time"]
-    metadata = getattr(instance, "metadata", {}) or {}
-    return all(metadata.get(f) for f in required_fields)
+    mandatory_fields = [
+        "blueprint_ref",
+        "subject",
+        "topic",
+        "difficulty",
+        "cognitive_level",
+        "marks",
+        "time",
+        "source",
+    ]
+
+    for field in mandatory_fields:
+        value = getattr(instance, field, None)
+        # If the value is None, an empty string, or 0, it fails the check
+        if value in [None, "", 0]:
+            return False
+
+    return True
 
 
 def has_valid_mcq_config(instance) -> bool:
@@ -73,6 +88,7 @@ def is_moderation_panel_member(instance) -> bool:
 
 # ── Registration Guards ───────────────────────────────────────────────────────
 
+
 def nlems_eligibility_verified(instance) -> bool:
     """
     Registration can only move to pending_payment after NLEMS has confirmed
@@ -93,6 +109,7 @@ def payment_confirmed(instance) -> bool:
 
 
 # ── Marking Guards ────────────────────────────────────────────────────────────
+
 
 def ai_scoring_complete(instance) -> bool:
     """AI scoring task has set ai_mark on the MarkingDecision."""
@@ -143,6 +160,7 @@ def reconciliation_required(instance) -> bool:
 
 # ── Results Guards ────────────────────────────────────────────────────────────
 
+
 def normalisation_complete(instance) -> bool:
     """All scripts in the sitting have a final_mark_locked status."""
     return getattr(instance, "normalisation_complete", False)
@@ -154,6 +172,7 @@ def dg_signoff_recorded(instance) -> bool:
 
 
 # ── Re-sit Guards ─────────────────────────────────────────────────────────────
+
 
 def resit_fee_confirmed(instance) -> bool:
     """System 20 payment webhook confirmed re-sit fee."""

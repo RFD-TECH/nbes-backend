@@ -75,8 +75,22 @@ def _ip(request):
 # ── NBECMember ────────────────────────────────────────────────────────────────
 
 class MemberListCreateView(APIView):
-    """``POST /api/v1/nbec/members/`` — Create a member record."""
+    """``GET /api/v1/nbec/members/`` — List members. ``POST`` — Create."""
     permission_classes = [IsAuthenticated, has_permission("committee:manage")]
+
+    @extend_schema(
+        tags=["NBEC Committee"],
+        summary="List NBEC members",
+        operation_id="nbec_member_list",
+        responses={200: NBECMemberSerializer(many=True)},
+    )
+    def get(self, request):
+        qs = NBECMember.objects.all().order_by("full_name")
+        from shared.pagination import StandardResultsPagination
+        paginator = StandardResultsPagination()
+        result = paginator.paginate_queryset(qs, request)
+        data = NBECMemberSerializer(result, many=True).data
+        return paginator.get_paginated_response(data)
 
     @extend_schema(
         tags=["NBEC Committee"],
@@ -325,13 +339,15 @@ class MeetingAdjournView(APIView):
         if not meeting:
             return _err("NOT_FOUND", "Meeting not found.", status.HTTP_404_NOT_FOUND)
         try:
-            meeting = services.adjourn_meeting(
+            meeting, minutes = services.adjourn_meeting(
                 _actor(request), meeting,
                 request_id=_rid(request), ip_address=_ip(request),
             )
         except ValueError as exc:
             return _err("VALIDATION_ERROR", str(exc), status.HTTP_400_BAD_REQUEST)
-        return _ok(MeetingSerializer(meeting).data, _rid(request))
+        data = MeetingSerializer(meeting).data
+        data["minutes_id"] = str(minutes.id)
+        return _ok(data, _rid(request))
 
 
 # ── Minutes ───────────────────────────────────────────────────────────────────
