@@ -91,6 +91,7 @@ def create_or_update_item_draft(
         "marks": str(item.marks) if item.marks else None,
         "time": item.time,
         "blueprint_ref": item.blueprint_ref,
+        "source": item.source,
     }
 
     # For new items, default asset_refs to empty list if none provided.
