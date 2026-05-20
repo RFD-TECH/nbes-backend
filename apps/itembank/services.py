@@ -290,7 +290,10 @@ def restore_item_version(item_id: str, version_id: str, actor_auth: dict) -> Ite
     except ObjectDoesNotExist as exc:
         raise ValueError("Author user not found for provided auth sub") from exc
 
-    item = Item.objects.select_for_update().get(id=item_id)
+    try:
+        item = Item.objects.select_for_update().get(id=item_id)
+    except ObjectDoesNotExist as exc:
+        raise ObjectDoesNotExist("Item not found.") from exc
 
     # Validation Constraints
     if item.author_id_id != resolved_user.id:
@@ -391,7 +394,10 @@ def process_suggestion_decision(
     except ObjectDoesNotExist as exc:
         raise ValueError("Author user not found for provided auth sub") from exc
 
-    item = Item.objects.select_for_update().get(id=item_id)
+    try:
+        item = Item.objects.select_for_update().get(id=item_id)
+    except ObjectDoesNotExist as exc:
+        raise ObjectDoesNotExist("Item not found.") from exc
 
     try:
         suggestion = ItemComment.objects.get(
