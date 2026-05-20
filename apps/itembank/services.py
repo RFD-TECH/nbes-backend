@@ -2,9 +2,11 @@
 
 import uuid
 import logging
+from datetime import timedelta
 from django.db import transaction
 from django.core.exceptions import ValidationError, ObjectDoesNotExist
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 
 from .models import Item, ItemTransition, ItemVersion, ItemComment
 from apps.audit.models import AuditEvent
@@ -282,10 +284,16 @@ def restore_item_version(item_id: str, version_id: str, actor_auth: dict) -> Ite
         ValueError: If validation fails or the requested historical
             version does not exist.
     """
+    User = get_user_model()
+    try:
+        resolved_user = User.objects.get(keycloak_sub=actor_auth["sub"])
+    except ObjectDoesNotExist as exc:
+        raise ValueError("Author user not found for provided auth sub") from exc
+
     item = Item.objects.select_for_update().get(id=item_id)
 
     # Validation Constraints
-    if str(item.author_id_id) != actor_auth["sub"]:
+    if item.author_id_id != resolved_user.id:
         raise ValueError("Only the assigned author can restore item versions.")
     if item.status not in ["Draft", "Revised"]:
         raise ValueError(
@@ -308,7 +316,7 @@ def restore_item_version(item_id: str, version_id: str, actor_auth: dict) -> Ite
         content=historical_version.content,
         metadata_snapshot=historical_version.metadata_snapshot,
         asset_refs=historical_version.asset_refs,
-        saved_by_id=actor_auth["sub"],
+        saved_by=resolved_user,
     )
 
     # Revert Item metadata to match the restored snapshot
@@ -377,6 +385,12 @@ def process_suggestion_decision(
         ValueError: If validation fails or the suggestion cannot be
             located.
     """
+    User = get_user_model()
+    try:
+        resolved_user = User.objects.get(keycloak_sub=actor_auth["sub"])
+    except ObjectDoesNotExist as exc:
+        raise ValueError("Author user not found for provided auth sub") from exc
+
     item = Item.objects.select_for_update().get(id=item_id)
 
     try:
@@ -387,7 +401,7 @@ def process_suggestion_decision(
         raise ValueError("Suggestion not found.") from exc
 
     # RBAC/State Validation
-    if str(item.author_id_id) != actor_auth["sub"]:
+    if item.author_id_id != resolved_user.id:
         raise ValueError("Only the Item Writer can accept or decline suggestions.")
     if item.status not in ["In Review", "Revised"]:
         raise ValueError(
@@ -407,7 +421,7 @@ def process_suggestion_decision(
             anchor_path=f"reply_to_{suggestion.id}",  # Links the rationale to the original suggestion
             body=f"[{data['decision'].upper()}] Rationale: {data['rationale']}",
             status="resolved",  # Replies are born resolved so they don't clutter the open queue
-            created_by_id=actor_auth["sub"],
+            created_by=resolved_user,
         )
 
     AuditEvent.record(

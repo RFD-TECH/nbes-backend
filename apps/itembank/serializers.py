@@ -195,7 +195,8 @@ class SuggestionDecisionSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         # Declined suggestions must be preserved alongside a documented rationale.
-        if attrs["decision"] == "decline" and not attrs.get("rationale"):
+        rationale = attrs.get("rationale")
+        if attrs["decision"] == "decline" and (not rationale or not rationale.strip()):
             raise serializers.ValidationError(
                 {"rationale": "A rationale is required when declining a suggestion."}
             )

@@ -116,12 +116,14 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
 
             if v1_id and v2_id:
                 # Return exactly two versions for the side-by-side diff
-                versions = item.versions.filter(id__in=[v1_id, v2_id])
-                if versions.count() != 2:
+                version_list = list(item.versions.filter(id__in=[v1_id, v2_id]))
+                version_by_id = {str(version.id): version for version in version_list}
+                if len(version_list) != 2:
                     return error_response(
                         "One or both specified versions were not found.",
                         status_code=404,
                     )
+                versions = [version_by_id[v1_id], version_by_id[v2_id]]
             else:
                 # Return standard descending history list
                 versions = item.versions.all().order_by("-version_no")
@@ -204,9 +206,13 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
                 data=serializer.validated_data,
                 actor_auth=request.auth,
             )
+            decision = serializer.validated_data["decision"]
+            past_tense = {"accept": "accepted", "decline": "declined"}.get(
+                decision, f"{decision}ed"
+            )
             return success_response(
                 data=result,
-                message=f"Suggestion {serializer.validated_data['decision']}ed.",
+                message=f"Suggestion {past_tense}.",
             )
         except ObjectDoesNotExist:
             return error_response("Item not found.", status_code=404)
