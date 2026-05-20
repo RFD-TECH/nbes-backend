@@ -293,7 +293,7 @@ def restore_item_version(item_id: str, version_id: str, actor_auth: dict) -> Ite
     try:
         item = Item.objects.select_for_update().get(id=item_id)
     except ObjectDoesNotExist as exc:
-        raise ObjectDoesNotExist("Item not found.") from exc
+        raise ValueError("Item not found.") from exc
 
     # Validation Constraints
     if item.author_id_id != resolved_user.id:
@@ -397,7 +397,7 @@ def process_suggestion_decision(
     try:
         item = Item.objects.select_for_update().get(id=item_id)
     except ObjectDoesNotExist as exc:
-        raise ObjectDoesNotExist("Item not found.") from exc
+        raise ValueError("Item not found.") from exc
 
     try:
         suggestion = ItemComment.objects.get(
@@ -490,16 +490,29 @@ def check_and_escalate_overdue_reviews() -> int:
                 entry_transition.occurred_at,
             )
 
-            AuditEvent.record(
-                actor_id="SYSTEM",  # Triggered by the server, not a user
+            # Avoid duplicate SLA escalation audit events within the recent window
+            recent_since = timezone.now() - timedelta(days=1)
+            already_recorded = AuditEvent.objects.filter(
+                actor_id="SYSTEM",
                 action="SLA_ESCALATION_TRIGGERED",
                 entity_type="item",
                 entity_id=str(item.id),
-                new_state={
-                    "days_overdue": (timezone.now() - entry_transition.occurred_at).days
-                },
-            )
+                created_at__gte=recent_since,
+            ).exists()
 
-            escalated_count += 1
+            if not already_recorded:
+                AuditEvent.record(
+                    actor_id="SYSTEM",  # Triggered by the server, not a user
+                    action="SLA_ESCALATION_TRIGGERED",
+                    entity_type="item",
+                    entity_id=str(item.id),
+                    new_state={
+                        "days_overdue": (
+                            timezone.now() - entry_transition.occurred_at
+                        ).days
+                    },
+                )
+
+                escalated_count += 1
 
     return escalated_count
