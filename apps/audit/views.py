@@ -87,7 +87,27 @@ class AuditSearchView(APIView):
             OpenApiParameter("page", int, required=False),
             OpenApiParameter("page_size", int, required=False),
         ],
-        responses={200: AuditEventSerializer(many=True)},
+        responses={
+            200: inline_serializer(
+                name="AuditSearchPaginatedResponse",
+                fields={
+                    "success": serializers.BooleanField(),
+                    "data": AuditEventSerializer(many=True),
+                    "meta": inline_serializer(
+                        name="AuditSearchPaginationMeta",
+                        fields={
+                            "page": serializers.IntegerField(required=False),
+                            "page_size": serializers.IntegerField(required=False),
+                            "count": serializers.IntegerField(required=False),
+                            "num_pages": serializers.IntegerField(required=False),
+                            "next": serializers.CharField(required=False, allow_null=True),
+                            "previous": serializers.CharField(required=False, allow_null=True),
+                            "request_id": serializers.CharField(required=False, allow_blank=True),
+                        },
+                    ),
+                },
+            )
+        },
     )
     def get(self, request):
         q = build_audit_query(request.query_params)
