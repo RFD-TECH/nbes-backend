@@ -44,6 +44,7 @@ LOCAL_APPS = [
     "apps.audit",
     "apps.sla",
     "apps.reporting",
+    "apps.dashboards",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -62,6 +63,15 @@ MIDDLEWARE = [
     # Injects X-Request-ID and captures IP/user-agent for audit events.
     # See shared/middleware.py
     "shared.middleware.AuditMiddleware",
+    # Enforces Idempotency-Key on state-mutating API calls. Must run after
+    # AuditMiddleware so cache keys can scope on the request_id-derived
+    # correlation surface; runs before DRF auth so anonymous retries also
+    # dedupe.
+    "shared.middleware.IdempotencyKeyMiddleware",
+    # Edge throttle and 24h IP block. Counts rejected (401/403/429)
+    # responses. Runs near the top of the chain so blocks short-circuit
+    # before auth/DB work happens.
+    "shared.middleware.EdgeRateLimitMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -219,6 +229,26 @@ MINIO_BUCKET_NAME = os.environ.get("MINIO_BUCKET_NAME", "nbes-bucket")
 # ── External Systems ──────────────────────────────────────────────────────────
 SYSTEM_17_URL = os.environ.get("SYSTEM_17_URL", "")
 SYSTEM_17_API_KEY = os.environ.get("SYSTEM_17_API_KEY", "")
+# HMAC secret shared with System 17 for signed inter-system calls. Required
+# whenever KAFKA_ENABLED=True (i.e. the outbox actually publishes off-box).
+SYSTEM_17_HMAC_SECRET = os.environ.get("SYSTEM_17_HMAC_SECRET", "")
+SYSTEM_17_TIMEOUT_SECONDS = float(os.environ.get("SYSTEM_17_TIMEOUT_SECONDS", "5"))
+SYSTEM_17_NONCE_WINDOW_SECONDS = int(
+    os.environ.get("SYSTEM_17_NONCE_WINDOW_SECONDS", "300")
+)
+
+# Idempotency cache — 24h default.
+IDEMPOTENCY_CACHE_TTL_SECONDS = int(
+    os.environ.get("IDEMPOTENCY_CACHE_TTL_SECONDS", "86400")
+)
+
+# Edge throttle thresholds — used by shared.middleware.EdgeRateLimitMiddleware.
+# Blueprint §1.2.6 / F000-06.
+EDGE_THROTTLE_THRESHOLD = int(os.environ.get("EDGE_THROTTLE_THRESHOLD", "100"))
+EDGE_BLOCK_THRESHOLD_24H = int(os.environ.get("EDGE_BLOCK_THRESHOLD_24H", "1000"))
+EDGE_SECURITY_EVENT_RETENTION_DAYS = int(
+    os.environ.get("EDGE_SECURITY_EVENT_RETENTION_DAYS", "90")
+)
 SYSTEM_20_WEBHOOK_SECRET = os.environ.get("SYSTEM_20_WEBHOOK_SECRET", "")
 SYSTEM_21_URL = os.environ.get("SYSTEM_21_URL", "")
 SYSTEM_21_API_KEY = os.environ.get("SYSTEM_21_API_KEY", "")

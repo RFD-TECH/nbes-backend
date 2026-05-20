@@ -35,6 +35,16 @@ from rest_framework.exceptions import AuthenticationFailed
 JWKS_CACHE_SECONDS = 300
 
 
+def _categorise(message: str) -> str:
+    """Pick a SecurityEvent category from an AuthenticationFailed message."""
+    low = (message or "").lower()
+    if "expired" in low:
+        return "auth_token_expired"
+    if "audience" in low or "aud" in low:
+        return "auth_audience_mismatch"
+    return "auth_token_invalid"
+
+
 def _normalise_url(url: str) -> str:
     return (url or "").rstrip("/")
 
@@ -150,21 +160,34 @@ class KeycloakJWTAuthentication(BaseAuthentication):
         try:
             alg = jwt.get_unverified_header(token).get("alg")
         except Exception as exc:
+            self._record_failure(request, "auth_token_invalid", reason=str(exc))
             raise AuthenticationFailed("Invalid token format.") from exc
 
-        if alg == "RS256":
-            payload = _decode_rs256(token)
-        elif alg == "HS256":
-            if settings.KEYCLOAK_ENABLED:
-                raise AuthenticationFailed(
-                    "HS256 tokens are not accepted in Keycloak mode."
+        try:
+            if alg == "RS256":
+                payload = _decode_rs256(token)
+            elif alg == "HS256":
+                if settings.KEYCLOAK_ENABLED:
+                    self._record_failure(
+                        request, "auth_token_invalid",
+                        reason="HS256 token in Keycloak mode",
+                    )
+                    raise AuthenticationFailed(
+                        "HS256 tokens are not accepted in Keycloak mode."
+                    )
+                payload = _decode_hs256(token)
+            else:
+                self._record_failure(
+                    request, "auth_token_invalid",
+                    reason=f"unsupported alg={alg}",
                 )
-            payload = _decode_hs256(token)
-        else:
-            raise AuthenticationFailed(
-                f"Unsupported signing algorithm: {alg}. Use the RS256 "
-                "Keycloak access_token returned by IAM /api/auth/mfa/verify/."
-            )
+                raise AuthenticationFailed(
+                    f"Unsupported signing algorithm: {alg}. Use the RS256 "
+                    "Keycloak access_token returned by IAM /api/auth/mfa/verify/."
+                )
+        except AuthenticationFailed as exc:
+            self._record_failure(request, _categorise(str(exc)), reason=str(exc))
+            raise
 
         # Normalise to the production shape: callers downstream rely on
         # `sub` and `realm_access.roles` regardless of mode.
@@ -179,6 +202,31 @@ class KeycloakJWTAuthentication(BaseAuthentication):
 
     def authenticate_header(self, request):
         return "Bearer"
+
+    @staticmethod
+    def _record_failure(request, category, *, reason: str = "") -> None:
+        """Best-effort SecurityEvent emission on auth failure.
+
+        We do not import at module top level because some failure paths
+        (e.g. early-boot import of the auth class by DRF) precede the
+        app registry being ready.
+        """
+        try:
+            from shared.secops import record_security_event
+            record_security_event(
+                category=category,
+                ip_address=getattr(request, "ip_address", None)
+                    or request.META.get("REMOTE_ADDR"),
+                request_id=getattr(request, "request_id", None),
+                indicators={
+                    "path": request.path,
+                    "method": request.method,
+                    "reason": reason[:200],
+                },
+            )
+        except Exception:
+            # Never let security-event recording mask the auth failure.
+            pass
 
     def _mirror_profile(self, payload: dict):
         """Get-or-create the thin local UserProfile keyed on Keycloak sub."""

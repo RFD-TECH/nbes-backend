@@ -42,6 +42,8 @@ urlpatterns = [
     path("api/v1/cert-trigger/", include("apps.cert_trigger.urls")),
     path("api/v1/notifications/",include("apps.notifications.urls")),
     path("api/v1/audit/",        include("apps.audit.urls")),
+    path("api/v1/secops/",       include("apps.audit.secops_urls")),
+    path("api/v1/dashboard/",    include("apps.dashboards.urls")),
     path("api/v1/sla/",          include("apps.sla.urls")),
     path("api/v1/reporting/",    include("apps.reporting.urls")),
 ]

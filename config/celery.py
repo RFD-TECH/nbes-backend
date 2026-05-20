@@ -40,4 +40,25 @@ app.conf.beat_schedule = {
         "schedule": crontab(hour=2, minute=0),
         "options": {"queue": "sla-monitor"},
     },
+    # Daily audit-chain anchor — closes the previous UTC day at 01:00 UTC
+    # and emits AuditChainAnchorReady to the outbox for System 22.
+    # Blueprint §1.2.7 / acceptance F000-07.
+    "daily-hash-anchor": {
+        "task": "apps.audit.tasks.daily_hash_anchor",
+        "schedule": crontab(hour=1, minute=0),
+        "options": {"queue": "outbox"},
+    },
+    # Security Operations daily summary — 06:00 UTC. Feeds the SecOps
+    # Console daily-summary endpoint and the notification bridge.
+    "daily-security-summary": {
+        "task": "apps.audit.tasks.daily_security_summary",
+        "schedule": crontab(hour=6, minute=0),
+        "options": {"queue": "sla-monitor"},
+    },
+    # Prune SecurityEvent rows past the hot retention window. Daily, 02:30 UTC.
+    "cleanup-security-events": {
+        "task": "apps.audit.tasks.cleanup_security_events",
+        "schedule": crontab(hour=2, minute=30),
+        "options": {"queue": "sla-monitor"},
+    },
 }
