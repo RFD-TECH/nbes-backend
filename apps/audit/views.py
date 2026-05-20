@@ -158,7 +158,19 @@ class AuditChainView(APIView):
             "store using its published public key."
         ),
         responses={
-            200: DailyHashAnchorSerializer,
+            200: inline_serializer(
+                name="AuditChainResponse",
+                fields={
+                    "success": serializers.BooleanField(default=True),
+                    "data": DailyHashAnchorSerializer(),
+                    "meta": inline_serializer(
+                        name="AuditChainResponseMeta",
+                        fields={
+                            "request_id": serializers.CharField(),
+                        },
+                    ),
+                },
+            ),
             404: inline_serializer(
                 name="AuditChainNotFound",
                 fields={
