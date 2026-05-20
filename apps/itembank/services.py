@@ -318,6 +318,8 @@ def restore_item_version(item_id: str, version_id: str, actor_auth: dict) -> Ite
     item.cognitive_level = snapshot.get("cognitive_level", item.cognitive_level)
     item.difficulty = snapshot.get("difficulty", item.difficulty)
     item.time = snapshot.get("time", item.time)
+    item.blueprint_ref = snapshot.get("blueprint_ref", item.blueprint_ref)
+    item.source = snapshot.get("source", item.source)
 
     marks_val = snapshot.get("marks")
     item.marks = float(marks_val) if marks_val else None
