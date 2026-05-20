@@ -242,8 +242,10 @@ class ThrottledIPsView(APIView):
         # Show blocks before plain throttles.
         result = sorted(
             seen.values(),
-            key=lambda row: (0 if row["category"] == "ip_blocked" else 1, row["occurred_at"]),
-            reverse=True,
+            key=lambda row: (
+                0 if row["category"] == "ip_blocked" else 1,
+                -row["occurred_at"].timestamp(),
+            ),
         )
         return _envelope(result, request)
 
