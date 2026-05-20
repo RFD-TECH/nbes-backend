@@ -180,7 +180,16 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
 
         try:
             # Verify the item actually exists
-            Item.objects.get(id=pk)
+            item = Item.objects.get(id=pk)
+
+            # Verify the provided version belongs to this item (prevent cross-item comments)
+            version_id = serializer.validated_data.get(
+                "item_version_id"
+            ) or request.data.get("item_version_id")
+            if version_id and not item.versions.filter(id=version_id).exists():
+                return error_response(
+                    "Version does not belong to this item.", status_code=400
+                )
 
             comment = serializer.save(created_by_id=request.auth["sub"])
             return success_response(
