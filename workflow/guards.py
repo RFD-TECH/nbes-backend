@@ -34,8 +34,10 @@ def has_mandatory_metadata(instance):
 
     for field in mandatory_fields:
         value = getattr(instance, field, None)
+        if isinstance(value, str):
+            value = value.strip()
         # If the value is None, an empty string, or 0, it fails the check
-        if value in [None, "", 0]:
+        if value in (None, "", 0):
             return False
 
     return True
