@@ -65,6 +65,9 @@ class Item(models.Model):
     )
     audit_hash = models.CharField(max_length=256, null=True, blank=True)
 
+    class Meta:
+        db_table = "item"
+
 
 class ItemVersion(models.Model):
     """Stores a historical version of an Item.
@@ -89,6 +92,14 @@ class ItemVersion(models.Model):
     asset_refs = models.JSONField(default=list)  # Maps to asset_refs[]
     saved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING)
     saved_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "item_version"
+        ordering = ["-version_no"]  # Latest version first
+        unique_together = (
+            "item_id",
+            "version_no",
+        )  # Ensure version numbers are unique per item
 
 
 class ItemComment(models.Model):
@@ -118,6 +129,9 @@ class ItemComment(models.Model):
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING
     )
+
+    class Meta:
+        db_table = "item_comment"
 
 
 class ItemTransition(models.Model):
@@ -153,6 +167,7 @@ class PanelVote(models.Model):
     - voted_at: timestamp of vote.
     """
 
+    VOTE_CHOICES = [("Approve", "Approve"), ("Reject", "Reject")]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     item_id = models.ForeignKey(
         Item,
@@ -162,9 +177,13 @@ class PanelVote(models.Model):
     panellist_id = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING
     )
-    vote = models.CharField(max_length=50)
+    vote = models.CharField(max_length=50, choices=VOTE_CHOICES)
     justification = models.TextField()
     voted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "panel_vote"
+        unique_together = ("item_id", "panellist_id")  # One vote per panellist per item
 
 
 class VaultAccess(models.Model):
@@ -198,8 +217,14 @@ class VaultExportRequest(models.Model):
     - created_at: timestamp when request was created.
     """
 
+    STATUS_CHOICES = [
+        ("Pending", "Pending"),
+        ("Executed", "Executed"),
+        ("Expired", "Expired"),
+    ]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     scope = models.CharField(max_length=255)
+    purpose = models.CharField(max_length=255, null=True, blank=True)
     requester_id = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.DO_NOTHING,
@@ -212,9 +237,12 @@ class VaultExportRequest(models.Model):
         null=True,
         blank=True,
     )
-    status = models.CharField(max_length=50)
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES)
     expires_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "vault_export_request"
 
 
 class Paper(models.Model):

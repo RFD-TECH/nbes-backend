@@ -6,8 +6,16 @@ from django.db import transaction
 from django.utils import timezone
 from datetime import timedelta
 from django.core.exceptions import ValidationError, ObjectDoesNotExist
+from .tasks import dispatch_item_status_notification
 
-from .models import Item, ItemTransition, ItemVersion, ItemComment
+from .models import (
+    Item,
+    ItemTransition,
+    ItemVersion,
+    ItemComment,
+    PanelVote,
+    VaultExportRequest,
+)
 from apps.audit.models import AuditEvent
 from workflow.guards import has_mandatory_metadata
 
@@ -448,3 +456,124 @@ def check_and_escalate_overdue_reviews() -> int:
             escalated_count += 1
 
     return escalated_count
+
+
+@transaction.atomic
+def register_panel_vote(
+    item_id: str, panellist_id: str, vote_type: str, justification: str
+) -> Item:
+    """
+    Casts an item panel vote, checks word thresholds,
+    and evaluates consensus state changes automatically.
+    """
+    item = Item.objects.select_for_update().get(id=item_id)
+
+    if item.status != "Moderation Panel":
+        raise ValueError(
+            f"Item is not in the moderation phase. Current status: {item.status}"
+        )
+
+    # Enforce word limit constraint
+    word_count = len(justification.split())
+    if word_count < 30:
+        raise ValueError(
+            f"Justification narrative must be at least 30 words. Current count: {word_count}"
+        )
+
+    # Save the vote
+    PanelVote.objects.create(
+        item=item,
+        panellist_id=panellist_id,
+        vote=vote_type,
+        justification=justification,
+    )
+
+    # Evaluate current matching votes
+    votes = item.panel_votes.all()
+    approve_count = votes.filter(vote="Approve").count()
+    reject_count = votes.filter(vote="Reject").count()
+
+    # Consensus rules (Default 2 out of 3 match wins)
+    if approve_count >= 2:
+        item.status = "Approved"  # Automatically advances status and locks for use
+        item.save(update_fields=["status"])
+
+        # Fire async notification for Approval
+        dispatch_item_status_notification.delay(
+            str(item.id), str(item.author_id_id), "APPROVED"
+        )
+
+        # Log forensic snapshot to security audit
+        AuditEvent.record(
+            actor_id="SYSTEM",
+            action="ITEM_CONSENSUAL_APPROVAL",
+            entity_type="item",
+            entity_id=str(item.id),
+            new_state={
+                "status": "Approved",
+                "approvers": [
+                    str(v.panellist_id) for v in votes.filter(vote="Approve")
+                ],
+            },
+        )
+    elif reject_count >= 2:
+        item.status = "Rejected"
+        item.save(update_fields=["status"])
+
+        # Consolidate rejection rationale for the 5-minute notification trigger
+        consolidated_rationale = [v.justification for v in votes.filter(vote="Reject")]
+        dispatch_item_status_notification.delay(
+            str(item.id),
+            str(item.author_id_id),
+            "REJECTED",
+            rationales=consolidated_rationale,
+        )
+
+        AuditEvent.record(
+            actor_id="SYSTEM",
+            action="ITEM_CONSENSUAL_REJECTION",
+            entity_type="item",
+            entity_id=str(item.id),
+            new_state={"status": "Rejected"},
+        )
+
+    return item
+
+
+@transaction.atomic
+def execute_vault_cosign(request_id: str, cosigner_id: str) -> VaultExportRequest:
+    """
+    Co-signs and executes an export request with strict anti-circumvention validations.
+    """
+    req = VaultExportRequest.objects.select_for_update().get(id=request_id)
+
+    if req.status != "Pending":
+        raise ValueError(
+            f"This export request is no longer active. Status: {req.status}"
+        )
+    if timezone.now() > req.expires_at:
+        req.status = "Expired"
+        req.save()
+        raise ValueError("The 72-hour validation window for this request has expired.")
+
+    # Prevent self-signing anti-circumvention rule
+    if str(req.requester_id) == str(cosigner_id):
+        raise ValueError(
+            "Security Boundary Exception: Initiating officer cannot act as the co-signing authoriser."
+        )
+
+    # Execute request
+    req.cosigner_id = cosigner_id
+    req.status = "Executed"
+    req.save()
+
+    # Record the actual physical vault access log line
+    AuditEvent.record(
+        actor_id=str(cosigner_id),
+        action="VAULT_CONTENT_EXPORTED",
+        entity_type="vault",
+        entity_id=str(req.id),
+        new_state={"scope_length": len(req.scope)},
+    )
+
+    return req
