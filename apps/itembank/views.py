@@ -123,7 +123,14 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
                         "One or both specified versions were not found.",
                         status_code=404,
                     )
-                versions = [version_by_id[v1_id], version_by_id[v2_id]]
+                v1 = version_by_id.get(v1_id)
+                v2 = version_by_id.get(v2_id)
+                if v1 is None or v2 is None:
+                    return error_response(
+                        "One or both specified versions were not found.",
+                        status_code=404,
+                    )
+                versions = [v1, v2]
             else:
                 # Return standard descending history list
                 versions = item.versions.all().order_by("-version_no")
