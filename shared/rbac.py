@@ -1,21 +1,33 @@
 """shared/rbac.py — NBES authorization resolver.
 
 Single entry point: ``has_permission(jwt_payload, codename)``.
+
 Resolution order:
-1. Extract the NBES-scoped role names this user holds (see
-   ``get_nbes_role_names`` below — swappable when IAM ships the
-   ``system_roles`` JWT claim).
-2. Intersect with NBES's local Role registry — JWT roles NBES does not
+
+1. Extract the NBES-scoped role names this user holds. The preferred source
+   is ``resource_access[<NBES_CLIENT_ID>].roles`` (Keycloak client roles —
+   the target architecture). During the IAM migration the resolver falls
+   back to ``realm_access.roles`` and logs a structured warning so usage
+   of the legacy path is observable.
+2. ``super_admin`` in ``realm_access.roles`` always short-circuits to the
+   wildcard. This is the only realm role NBES honours post-migration.
+3. Intersect with NBES's local ``Role`` registry — JWT roles NBES does not
    recognise are ignored.
-3. Resolve the union of granted codenames via ``RolePermission`` rows.
-4. Result cached per role for ``CACHE_TTL`` (60 s, REQ-F000-02).
+4. Resolve the union of granted codenames via ``RolePermission`` rows.
+5. Result cached per role for ``CACHE_TTL`` (60 s, REQ-F000-02).
+
 The role -> permissions cache is invalidated by ``invalidate_role(name)``,
 called from the admin endpoints that mutate ``RolePermission`` rows.
 """
 from __future__ import annotations
 
+import logging
+
+from django.conf import settings
 from django.core.cache import cache
 
+
+logger = logging.getLogger(__name__)
 
 CACHE_TTL = 60
 _CACHE_PREFIX = "nbes:rbac:role:"
@@ -27,22 +39,43 @@ SUPER_ADMIN_ROLE = "super_admin"
 WILDCARD = "*"
 
 
+def _nbes_client_id() -> str:
+    return getattr(settings, "NBES_CLIENT_ID", "nbes-api")
+
+
 def get_nbes_role_names(jwt_payload: dict) -> list[str]:
     """Return the role names this user holds *in NBES*.
 
-    Today: reads ``realm_access.roles`` from the JWT. NBES later filters
-    this list against its own ``Role`` table so unknown roles are ignored.
-
-    When IAM ships the ``system_roles`` custom claim, replace the body with
-    ``return jwt_payload.get("system_roles", {}).get("NBES", [])`` — no
-    callers change.
+    Preferred source: ``resource_access[<NBES_CLIENT_ID>].roles`` (Keycloak
+    client roles). If absent or empty, falls back to ``realm_access.roles``
+    and logs a warning so the migration completion can be tracked.
     """
     if not jwt_payload:
         return []
-    roles = jwt_payload.get("realm_access", {}).get("roles") or []
-    if not isinstance(roles, list):
+
+    client_id = _nbes_client_id()
+    resource_roles = (
+        jwt_payload.get("resource_access", {})
+        .get(client_id, {})
+        .get("roles")
+    )
+    if isinstance(resource_roles, list) and resource_roles:
+        return [r for r in resource_roles if isinstance(r, str)]
+
+    realm_roles = jwt_payload.get("realm_access", {}).get("roles") or []
+    if not isinstance(realm_roles, list):
         return []
-    return [r for r in roles if isinstance(r, str)]
+    string_roles = [r for r in realm_roles if isinstance(r, str)]
+    if string_roles:
+        logger.warning(
+            "rbac.legacy_realm_role_fallback",
+            extra={
+                "sub": jwt_payload.get("sub", ""),
+                "nbes_client_id": client_id,
+                "realm_role_count": len(string_roles),
+            },
+        )
+    return string_roles
 
 
 def _permissions_for_role(role_name: str) -> set[str]:
@@ -62,18 +95,27 @@ def _permissions_for_role(role_name: str) -> set[str]:
     return codenames
 
 
+def _has_super_admin(jwt_payload: dict) -> bool:
+    """``super_admin`` is a *realm role* in the target architecture.
+    Check ``realm_access.roles`` directly so the wildcard works regardless
+    of whether the token also carries ``resource_access`` entries."""
+    realm_roles = (jwt_payload or {}).get("realm_access", {}).get("roles") or []
+    return isinstance(realm_roles, list) and SUPER_ADMIN_ROLE in realm_roles
+
+
 def permissions_for(jwt_payload: dict) -> set[str]:
     """All codenames this user holds in NBES, resolved from the JWT.
 
-    IAM ``super_admin`` short-circuits to the wildcard sentinel — bearer
-    is granted every NBES permission without needing a local Role row.
+    IAM ``super_admin`` (a realm role) short-circuits to the wildcard
+    sentinel — bearer is granted every NBES permission without needing a
+    local Role row.
     """
+    if _has_super_admin(jwt_payload):
+        return {WILDCARD}
+
     role_names = get_nbes_role_names(jwt_payload)
     if not role_names:
         return set()
-
-    if SUPER_ADMIN_ROLE in role_names:
-        return {WILDCARD}
 
     from apps.users.models import Role
 

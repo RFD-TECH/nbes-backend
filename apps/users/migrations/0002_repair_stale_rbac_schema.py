@@ -43,6 +43,16 @@ def repair_stale_schema(apps, schema_editor):
         schema_editor.execute("DROP TABLE IF EXISTS users_userprofile CASCADE")
         existing_tables.discard("users_userprofile")
 
+    # If users_role exists but is_custom column is missing (stale volume from
+    # before is_custom was added to 0001_initial), add it now so 0003 doesn't fail.
+    if "users_role" in existing_tables and "is_custom" not in columns("users_role"):
+        schema_editor.execute(
+            "ALTER TABLE users_role ADD COLUMN is_custom boolean NOT NULL DEFAULT true"
+        )
+        schema_editor.execute(
+            "CREATE INDEX IF NOT EXISTS users_role_is_custom ON users_role (is_custom)"
+        )
+
     model_order = [
         "UserProfile",
         "Permission",

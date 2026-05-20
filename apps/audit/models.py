@@ -2,7 +2,7 @@
 import uuid
 import hashlib
 import json
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 
@@ -52,10 +52,16 @@ class AuditEvent(models.Model):
                 request_id=getattr(request, "request_id", None),
             )
         """
-        last = cls.objects.order_by("-id").values("chain_hash").first()
+        with transaction.atomic():
+         return cls._record_atomic(action=action, **kwargs)
+
+    @classmethod
+    def _record_atomic(cls, *, action: str, **kwargs) -> "AuditEvent":
+        last = cls.objects.select_for_update().order_by("-id").values("chain_hash").first()
         previous_hash = last["chain_hash"] if last else "0" * 64
 
         event_id = kwargs.pop("event_id", uuid.uuid4())
+        created_at = kwargs.pop("created_at", timezone.now())
         payload = json.dumps({
             "event_id": str(event_id),
             "actor_id": str(kwargs.get("actor_id", "")),
@@ -63,7 +69,7 @@ class AuditEvent(models.Model):
             "entity_type": kwargs.get("entity_type", ""),
             "entity_id": str(kwargs.get("entity_id", "")),
             "new_state": kwargs.get("new_state", {}),
-            "created_at": timezone.now().isoformat(),
+            "created_at": created_at.isoformat(),
         }, sort_keys=True)
 
         chain_hash = hashlib.sha256(
@@ -74,6 +80,7 @@ class AuditEvent(models.Model):
             event_id=event_id,
             action=action,
             chain_hash=chain_hash,
+            created_at=created_at,
             **kwargs,
         )
 
@@ -85,6 +92,27 @@ class AuditEvent(models.Model):
         }, topic="nbes.audit")
 
         return event
+
+
+class DailyHashAnchor(models.Model):
+    """
+    One row per UTC date. Stores the SHA-256 chain head for that day.
+    The daily Celery Beat task exports this to System 22 by 01:00 UTC.
+    """
+    date = models.DateField(unique=True)
+    head_hash = models.CharField(max_length=64)
+    event_count = models.PositiveIntegerField(default=0)
+    exported_to_s22_at = models.DateTimeField(null=True, blank=True)
+    anchor_ref = models.CharField(max_length=200, blank=True)  # System 22 reference
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "audit_dailyhashanchor"
+        ordering = ["-date"]
+
+    def __str__(self):
+        exported = "exported" if self.exported_to_s22_at else "pending"
+        return f"AnchorHash {self.date} [{exported}]"
 
 
 class OutboxEvent(models.Model):
