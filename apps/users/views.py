@@ -1,6 +1,6 @@
 """apps/users/views.py — NBES RBAC admin endpoints.
 All endpoints require an authenticated user with the ``rbac:manage``
-permission (held by ``system-administrator`` per the seed). Every mutation
+permission (held by ``system_administrator`` per the seed). Every mutation
 emits an AuditEvent and invalidates the in-process role cache so the
 change takes effect within 60 s for every NBES node.
 """

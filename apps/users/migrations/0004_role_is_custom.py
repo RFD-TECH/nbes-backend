@@ -1,4 +1,4 @@
-from django.db import migrations, models
+from django.db import migrations
 
 
 SEEDED_ROLE_NAMES = [
@@ -31,10 +31,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.AddField(
-            model_name="role",
-            name="is_custom",
-            field=models.BooleanField(db_index=True, default=True),
-        ),
         migrations.RunPython(mark_seeded_roles, mark_all_roles_custom),
     ]

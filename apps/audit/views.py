@@ -17,9 +17,10 @@ required by NBE-N02.
 """
 from __future__ import annotations
 
-from datetime import datetime, time, timezone as py_timezone
+from datetime import datetime, time, timedelta, timezone as py_timezone
 
 from django.http import StreamingHttpResponse
+from django.db.models import Q
 from django.utils.dateparse import parse_date
 from drf_spectacular.utils import (
     OpenApiExample,
@@ -39,6 +40,26 @@ from shared.permissions import has_permission
 from .filters import build_audit_query, _parse_iso_date
 from .models import AuditEvent, DailyHashAnchor
 from .serializers import AuditEventSerializer, DailyHashAnchorSerializer
+
+
+def _yesterday_utc_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
+    """Return inclusive UTC bounds for yesterday."""
+    now = now or datetime.now(py_timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=py_timezone.utc)
+    yesterday = now.astimezone(py_timezone.utc).date() - timedelta(days=1)
+    start = datetime.combine(yesterday, time.min, tzinfo=py_timezone.utc)
+    end = datetime.combine(yesterday, time.max, tzinfo=py_timezone.utc)
+    return start, end
+
+
+def _audit_export_query(params, *, default_bounds=None):
+    """Build export query, defaulting an unbounded request to yesterday UTC."""
+    q = build_audit_query(params)
+    if not params.get("from") and not params.get("to"):
+        start, end = default_bounds or _yesterday_utc_bounds()
+        q &= Q(created_at__gte=start, created_at__lte=end)
+    return q
 
 
 def _meta_audit(request, *, action: str, new_state: dict) -> None:
@@ -270,7 +291,12 @@ class AuditExportView(APIView):
         responses={200: OpenApiResponse(description="NDJSON stream")},
     )
     def get(self, request):
-        q = build_audit_query(request.query_params)
+        default_bounds = (
+            _yesterday_utc_bounds()
+            if not request.query_params.get("from") and not request.query_params.get("to")
+            else None
+        )
+        q = _audit_export_query(request.query_params, default_bounds=default_bounds)
         queryset = AuditEvent.objects.filter(q).order_by("id").iterator(chunk_size=500)
 
         _meta_audit(
@@ -291,6 +317,10 @@ class AuditExportView(APIView):
         # Suggest a filename so curl -OJ saves it cleanly.
         start = request.query_params.get("from", "")
         end = request.query_params.get("to", "")
+        if default_bounds:
+            default_start, default_end = default_bounds
+            start = default_start.date().isoformat()
+            end = default_end.date().isoformat()
         filename = f"audit-export-{start or 'all'}-{end or 'all'}.ndjson"
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         response["X-Request-ID"] = str(getattr(request, "request_id", ""))

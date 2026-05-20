@@ -168,19 +168,11 @@ class KeycloakJWTAuthentication(BaseAuthentication):
                 payload = _decode_rs256(token)
             elif alg == "HS256":
                 if settings.KEYCLOAK_ENABLED:
-                    self._record_failure(
-                        request, "auth_token_invalid",
-                        reason="HS256 token in Keycloak mode",
-                    )
                     raise AuthenticationFailed(
                         "HS256 tokens are not accepted in Keycloak mode."
                     )
                 payload = _decode_hs256(token)
             else:
-                self._record_failure(
-                    request, "auth_token_invalid",
-                    reason=f"unsupported alg={alg}",
-                )
                 raise AuthenticationFailed(
                     f"Unsupported signing algorithm: {alg}. Use the RS256 "
                     "Keycloak access_token returned by IAM /api/auth/mfa/verify/."

@@ -104,8 +104,8 @@ def daily_hash_anchor(self, target_date: str | None = None):
     ``AuditChainAnchorReady`` to the outbox.
 
     Idempotent: re-running the task for the same date updates the row
-    in-place. If a day has zero events, we still record the row (with the
-    genesis hash) so verification can be uniform.
+    in-place. If a day has zero events, we still record the row with the
+    last chain hash before that day so the global chain remains continuous.
     """
     from apps.audit.models import AuditEvent, DailyHashAnchor
     from shared.events import publish
@@ -122,7 +122,19 @@ def daily_hash_anchor(self, target_date: str | None = None):
     head = queryset.order_by("-id").values("event_id", "chain_hash").first()
     count = queryset.count()
 
-    head_hash = head["chain_hash"] if head else GENESIS_HASH
+    previous_head = (
+        AuditEvent.objects
+        .filter(created_at__lt=day_start)
+        .order_by("-id")
+        .values("chain_hash")
+        .first()
+    )
+
+    head_hash = (
+        head["chain_hash"]
+        if head
+        else previous_head["chain_hash"] if previous_head else GENESIS_HASH
+    )
     head_event_id = head["event_id"] if head else None
 
     with transaction.atomic():

@@ -12,6 +12,7 @@ Reference: NBES System Architecture §2.1 — shared/middleware.py
 """
 
 import json
+import hashlib
 import logging
 import uuid
 
@@ -131,9 +132,9 @@ class IdempotencyKeyMiddleware:
     * **Replay with the same key** → the cached response is returned
       verbatim, body included, with ``X-Idempotent-Replay: true``.
 
-    Cache key includes the JWT ``sub`` (when present) so two clients can
-    use the same idempotency key without colliding. Unauthenticated
-    requests use a hash of the remote IP instead.
+    Cache key includes the request method/path and a stable hash of the
+    Authorization header when present. This middleware runs before DRF
+    authentication, so ``request.auth`` is not available yet.
 
     Mutating verbs: ``POST``, ``PUT``, ``PATCH``, ``DELETE``. ``GET`` /
     ``HEAD`` / ``OPTIONS`` pass through untouched.
@@ -176,15 +177,16 @@ class IdempotencyKeyMiddleware:
 
     @staticmethod
     def _build_cache_key(request, key: str) -> str:
-        # Trust ``request.auth`` if DRF has populated it; otherwise fall
-        # back to a stable hash of the remote IP so unauthenticated retries
-        # still dedupe.
-        sub = ""
-        auth = getattr(request, "auth", None)
-        if isinstance(auth, dict):
-            sub = str(auth.get("sub", ""))
-        scope = sub or f"ip:{request.META.get('REMOTE_ADDR', '')}"
-        return f"{IdempotencyKeyMiddleware.CACHE_PREFIX}:{scope}:{key}"
+        auth_header = request.META.get("HTTP_AUTHORIZATION", "").strip()
+        if auth_header:
+            principal = "auth:" + hashlib.sha256(
+                auth_header.encode("utf-8")
+            ).hexdigest()
+        else:
+            principal = f"ip:{request.META.get('REMOTE_ADDR', '')}"
+        material = "\x1f".join([request.method, request.path, principal, key])
+        digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+        return f"{IdempotencyKeyMiddleware.CACHE_PREFIX}:{digest}"
 
     @staticmethod
     def _store(cache_key: str, response) -> None:
@@ -269,8 +271,10 @@ class EdgeRateLimitMiddleware:
 
         # Cheap pre-check: already blocked or throttled?
         if cache.get(self._block_key(ip)):
+            self._record_rejection(request, ip, count_throttle=False)
             return self._block_response(request)
         if cache.get(self._throttle_key(ip)):
+            self._record_rejection(request, ip, count_throttle=False)
             return self._throttle_response(request)
 
         response = self.get_response(request)
@@ -282,7 +286,7 @@ class EdgeRateLimitMiddleware:
 
     # ----- counters ---------------------------------------------------------
 
-    def _record_rejection(self, request, ip: str) -> None:
+    def _record_rejection(self, request, ip: str, *, count_throttle: bool = True) -> None:
         throttle_threshold = self._get(
             "EDGE_THROTTLE_THRESHOLD", 100,
         )
@@ -290,9 +294,11 @@ class EdgeRateLimitMiddleware:
             "EDGE_BLOCK_THRESHOLD_24H", 1000,
         )
 
-        throttle_count = self._incr(
-            self._counter_key(ip, "throttle"), self.THROTTLE_WINDOW_SECONDS
-        )
+        throttle_count = None
+        if count_throttle:
+            throttle_count = self._incr(
+                self._counter_key(ip, "throttle"), self.THROTTLE_WINDOW_SECONDS
+            )
         block_count = self._incr(
             self._counter_key(ip, "block"), self.BLOCK_WINDOW_SECONDS
         )
