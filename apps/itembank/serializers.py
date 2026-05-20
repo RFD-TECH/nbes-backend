@@ -10,6 +10,7 @@ validation only.
 """
 
 from rest_framework import serializers
+from .models import ItemVersion, ItemComment
 
 
 class ItemDraftSerializer(serializers.Serializer):
@@ -111,4 +112,70 @@ class AssetUploadSerializer(serializers.Serializer):
         """Update method stub - not used as this is a non-model serializer."""
         raise NotImplementedError(
             "update() is not implemented for AssetUploadSerializer"
+        )
+
+
+class ItemVersionSerializer(serializers.ModelSerializer):
+    """Serializes a specific forensic snapshot of an item.
+
+    Used for version history and side-by-side diffing.
+    """
+
+    class Meta:
+        """Meta configuration for ItemVersionSerializer."""
+
+        model = ItemVersion
+        fields = [
+            "id",
+            "version_no",
+            "content",
+            "metadata_snapshot",
+            "asset_refs",
+            "saved_by",
+            "saved_at",
+        ]
+
+
+class ItemCommentSerializer(serializers.ModelSerializer):
+    """Handles creating and listing annotations on specific parts of an item."""
+
+    class Meta:
+        model = ItemComment
+        fields = [
+            "id",
+            "item_version_id",
+            "anchor_path",
+            "body",
+            "status",
+            "created_by",
+        ]
+        read_only_fields = ["id", "status", "created_by"]
+
+
+class SuggestionDecisionSerializer(serializers.Serializer):
+    """Handles the US-4 Accept/Decline payload."""
+
+    DECISION_CHOICES = [("accept", "Accept"), ("decline", "Decline")]
+
+    decision = serializers.ChoiceField(choices=DECISION_CHOICES)
+    rationale = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        # Declined suggestions must be preserved alongside a documented rationale.
+        if attrs["decision"] == "decline" and not attrs.get("rationale"):
+            raise serializers.ValidationError(
+                {"rationale": "A rationale is required when declining a suggestion."}
+            )
+        return attrs
+
+    def create(self, validated_data):
+        """Create is not supported for this transient payload serializer."""
+        raise NotImplementedError(
+            "create() is not implemented for SuggestionDecisionSerializer"
+        )
+
+    def update(self, instance, validated_data):
+        """Update is not supported for this transient payload serializer."""
+        raise NotImplementedError(
+            "update() is not implemented for SuggestionDecisionSerializer"
         )
