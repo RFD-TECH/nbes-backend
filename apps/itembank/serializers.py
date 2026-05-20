@@ -9,7 +9,11 @@ Note: This serializer is non-model-backed and is used for request/response
 validation only.
 """
 
+import json
+
 from rest_framework import serializers
+
+from .services import create_or_update_item_draft
 
 
 class ItemDraftSerializer(serializers.Serializer):
@@ -31,6 +35,10 @@ class ItemDraftSerializer(serializers.Serializer):
       attached assets such as images, files or other media.
     """
 
+    ITEM_TYPES = ["mcq", "essay", "short_answer", "practical", "multiple_response"]
+
+    item_type = serializers.ChoiceField(choices=ITEM_TYPES, required=False)
+
     # The actual rich-text question content. Expected to contain markup,
     # embedded equations and other structured content produced by the
     # front-end rich text editor.
@@ -48,11 +56,11 @@ class ItemDraftSerializer(serializers.Serializer):
     difficulty = serializers.CharField(max_length=50, required=False, allow_blank=True)
 
     # Estimated time (in seconds) to answer the item. Nullable/optional.
-    time = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    time = serializers.IntegerField(required=False, allow_null=True, min_value=1)
 
     # Marks/weight allocated to the item. Uses Decimal to preserve precision.
     marks = serializers.DecimalField(
-        max_digits=5, decimal_places=2, required=False, allow_null=True, min_value=0
+        max_digits=5, decimal_places=2, required=False, allow_null=True, min_value=0.01
     )
 
     # Optional provenance and blueprint references
@@ -64,17 +72,44 @@ class ItemDraftSerializer(serializers.Serializer):
     # Attached assets are expressed as a list of string identifiers (for
     # example UUIDs). The front-end stores references to uploaded assets and
     # the item draft keeps an array of those references.
+    # Do not provide a default here so omission of the field can be detected
+    # by the service layer (preserve existing refs on autosave when omitted).
     asset_refs = serializers.ListField(
-        child=serializers.CharField(), required=False, default=list
+        child=serializers.CharField(), required=False, allow_empty=True
     )
 
+    def validate(self, attrs):
+        """MCQ items must have exactly one correct answer."""
+        if attrs.get("item_type") == "mcq" and "content" in attrs:
+            try:
+                content_dict = json.loads(attrs["content"])
+                options = content_dict.get("options", [])
+                correct_count = sum(
+                    1
+                    for option in options
+                    if isinstance(option, dict)
+                    and (option.get("is_correct") or option.get("correct"))
+                )
+                if correct_count != 1:
+                    raise serializers.ValidationError(
+                        {"content": "MCQ must have exactly one correct answer."}
+                    )
+            except json.JSONDecodeError:
+                # Unparseable JSON will be rejected later by the workflow guard.
+                pass
+        return attrs
+
     def create(self, validated_data):
-        """Create method stub - not used as this is a non-model serializer."""
-        raise NotImplementedError("create() is not implemented for ItemDraftSerializer")
+        """Create a new draft item through the service layer."""
+        request = self.context.get("request")
+        return create_or_update_item_draft(validated_data, request.auth)
 
     def update(self, instance, validated_data):
-        """Update method stub - not used as this is a non-model serializer."""
-        raise NotImplementedError("update() is not implemented for ItemDraftSerializer")
+        """Auto-save an existing draft item through the service layer."""
+        request = self.context.get("request")
+        return create_or_update_item_draft(
+            validated_data, request.auth, item_id=instance.id
+        )
 
 
 class AssetUploadSerializer(serializers.Serializer):
@@ -102,13 +137,9 @@ class AssetUploadSerializer(serializers.Serializer):
         return value
 
     def create(self, validated_data):
-        """Create method stub - not used as this is a non-model serializer."""
-        raise NotImplementedError(
-            "create() is not implemented for AssetUploadSerializer"
-        )
+        """Return validated upload payload for compatibility with serializer APIs."""
+        return validated_data
 
     def update(self, instance, validated_data):
-        """Update method stub - not used as this is a non-model serializer."""
-        raise NotImplementedError(
-            "update() is not implemented for AssetUploadSerializer"
-        )
+        """Return the instance unchanged for compatibility with serializer APIs."""
+        return instance

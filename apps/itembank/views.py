@@ -1,8 +1,10 @@
 ﻿"""View sets for item authoring and submission workflows."""
 
 from rest_framework import viewsets, status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser
+from rest_framework.response import Response
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 
 from shared.permissions import has_permission
@@ -93,6 +95,24 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
                 str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
             )
 
+    @action(detail=True, methods=["post"])
+    def comments(self, request, pk=None):
+        """Scaffold for Sprint 3.2: Annotate specific portions of an item."""
+        _ = (request, pk)
+        return Response(
+            {"status": "pending_sprint_3.2"},
+            status=status.HTTP_501_NOT_IMPLEMENTED,
+        )
+
+    @action(detail=True, methods=["post"])
+    def votes(self, request, pk=None):
+        """Scaffold for Sprint 3.3: Record a panel vote."""
+        _ = (request, pk)
+        return Response(
+            {"status": "pending_sprint_3.3"},
+            status=status.HTTP_501_NOT_IMPLEMENTED,
+        )
+
 
 class AssetViewSet(viewsets.GenericViewSet):
     """Expose asset upload endpoint for item authoring workflows."""
@@ -130,3 +150,32 @@ class AssetViewSet(viewsets.GenericViewSet):
             return error_response(
                 str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
             )
+
+
+class VaultOperationsViewSet(viewsets.GenericViewSet):
+    """Scaffold for Sprint 3.3 vault operations."""
+
+    # Require authentication and project RBAC for vault operations
+    permission_classes = [IsAuthenticated, has_permission("item:create")]
+
+    @action(detail=False, methods=["post"], url_path="export-requests")
+    def create_export_request(self, _request):
+        return Response(status=status.HTTP_501_NOT_IMPLEMENTED)
+
+    @action(detail=True, methods=["post"])
+    def cosign(self, _request, _pk=None):
+        return Response(status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+class PaperConstructionViewSet(viewsets.GenericViewSet):
+    """Scaffold for Sprint 3.4 paper construction."""
+
+    # Require authentication and project RBAC for paper construction
+    permission_classes = [IsAuthenticated, has_permission("item:create")]
+
+    def create(self, _request):
+        return Response(status=status.HTTP_501_NOT_IMPLEMENTED)
+
+    @action(detail=False, methods=["post"])
+    def generate(self, _request):
+        return Response(status=status.HTTP_501_NOT_IMPLEMENTED)

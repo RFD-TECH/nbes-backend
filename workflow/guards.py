@@ -47,10 +47,42 @@ def has_valid_mcq_config(instance) -> bool:
     Non-MCQ items always pass this guard.
     TODO: Implement MCQ option validation.
     """
-    if instance.type != "mcq":
+    # Item model uses `item_type` field.
+    if getattr(instance, "item_type", None) != "mcq":
         return True
-    # TODO: validate instance.metadata["options"] structure
-    return True
+    # Try to validate the latest version content. We expect the front-end to
+    # serialize MCQ options into a JSON structure with an `options` list where
+    # each option may include an `is_correct` boolean. If the structure cannot
+    # be parsed, fail the guard to enforce SRS correctness rather than allow an
+    # underspecified MCQ into the review pipeline.
+    try:
+        import json
+
+        latest = getattr(instance, "versions", None)
+        if not latest:
+            return False
+        last_version = instance.versions.order_by("-version_no").first()
+        if not last_version or not last_version.content:
+            return False
+
+        payload = json.loads(last_version.content)
+        options = payload.get("options")
+        if not isinstance(options, list) or len(options) < 2:
+            return False
+
+        # Count options marked as correct. Support common keys.
+        correct_count = 0
+        for opt in options:
+            if isinstance(opt, dict) and (
+                opt.get("is_correct") is True or opt.get("correct") is True
+            ):
+                correct_count += 1
+
+        return correct_count == 1
+    except Exception:
+        # If parsing fails, treat as invalid to force authors to provide a
+        # structured MCQ payload that the system can verify.
+        return False
 
 
 def has_reviewer_assigned(instance) -> bool:
