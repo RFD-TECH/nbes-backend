@@ -321,9 +321,13 @@ class AuditExportView(APIView):
 
         response = StreamingHttpResponse(lines(), content_type="application/x-ndjson")
         # Suggest a filename so curl -OJ saves it cleanly.
-        start = request.query_params.get("from", "")
-        end = request.query_params.get("to", "")
-        filename = f"audit-export-{start or 'all'}-{end or 'all'}.ndjson"
+        start_raw = request.query_params.get("from", "")
+        end_raw = request.query_params.get("to", "")
+        start_date = _parse_iso_date(start_raw) if start_raw else None
+        end_date = _parse_iso_date(end_raw) if end_raw else None
+        start_label = start_date.isoformat() if start_date else ("invalid" if start_raw else "all")
+        end_label = end_date.isoformat() if end_date else ("invalid" if end_raw else "all")
+        filename = f"audit-export-{start_label}-{end_label}.ndjson"
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         response["X-Request-ID"] = str(getattr(request, "request_id", ""))
         return response
