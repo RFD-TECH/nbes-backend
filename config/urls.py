@@ -33,7 +33,7 @@ urlpatterns = [
     path("api/v1/admin/rbac/", include((rbac_admin_urls, "rbac-admin"))),
     path("api/v1/me/",         include((me_urls, "me"))),
     path("api/v1/committee/",    include("apps.committee.urls")),
-    path("api/v1/itembank/",     include("apps.itembank.urls")),
+    path("api/v1/",     include("apps.itembank.urls")),
     path("api/v1/sitting/",      include("apps.sitting.urls")),
     path("api/v1/registration/", include("apps.registration.urls")),
     path("api/v1/marking/",      include("apps.marking.urls")),
