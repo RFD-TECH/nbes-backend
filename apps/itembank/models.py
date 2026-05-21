@@ -258,7 +258,12 @@ class PanelVote(models.Model):
 
     class Meta:
         db_table = "panel_vote"
-        unique_together = ("item_id", "panellist_id")  # One vote per panellist per item
+        constraints = [
+            models.UniqueConstraint(
+                fields=["item_id", "panellist_id"],
+                name="unique_item_panellist",
+            )
+        ]  # One vote per panellist per item
 
 
 class VaultAccess(models.Model):

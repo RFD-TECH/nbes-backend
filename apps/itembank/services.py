@@ -679,7 +679,7 @@ def register_panel_vote(
                     item_id,
                     author_id,
                     Item.Status.REJECTED,
-                    rationales=consolidated_rationale,
+                    rationales=rationales,
                 )
             )
         )

@@ -56,7 +56,8 @@ class Command(BaseCommand):
         for item in vault_items:
             # include both id and audit hash to reflect item content and
             # ordering deterministically in the fingerprint input
-            hasher.update(f"{item.id}:{item.audit_hash}".encode("utf-8"))
+            canonical_audit_hash = item.audit_hash or ""
+            hasher.update(f"{item.id}:{canonical_audit_hash}".encode("utf-8"))
 
         local_checksum = hasher.hexdigest()
 
@@ -118,7 +119,10 @@ class Command(BaseCommand):
                     )
 
                 return remote_checksum
-            except (requests.RequestException, CommandError) as exc:
+            except CommandError:
+                # Local validation failures are permanent and should fail fast.
+                raise
+            except requests.RequestException as exc:
                 last_error = exc
                 if attempt == 3:
                     break
