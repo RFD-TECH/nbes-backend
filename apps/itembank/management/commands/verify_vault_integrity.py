@@ -4,16 +4,15 @@ This module provides a Django management command that computes a
 cryptographic checksum over approved Item records in the local
 vault and compares that checksum to a remote/replica checksum to
 detect cross-region replication drift.
-
-The remote checksum retrieval is left as a placeholder so the
-command can be adapted to the project's replication/monitoring
-infrastructure (for example, querying a proxy, a replica DB, or
-an API endpoint).
 """
 
-from django.core.management.base import BaseCommand
-from apps.itembank.models import Item
 import hashlib
+import os
+
+import requests
+from django.core.management.base import BaseCommand, CommandError
+
+from apps.itembank.models import Item
 
 
 class Command(BaseCommand):
@@ -58,11 +57,7 @@ class Command(BaseCommand):
 
         local_checksum = hasher.hexdigest()
 
-        # Retrieve remote checksum from replica or tracking node.
-        # remote_checksum = fetch_secondary_region_vault_checksum()
-        # For now we simulate a matching remote state; replace with
-        # real retrieval logic when integrating with replication.
-        remote_checksum = local_checksum
+        remote_checksum = self.fetch_secondary_region_vault_checksum()
 
         if local_checksum != remote_checksum:
             # Critical mismatch: report and (optionally) escalate.
@@ -75,5 +70,49 @@ class Command(BaseCommand):
             # trigger_on_call_pager_infrastructure(
             #     severity="CRITICAL", component="VaultReplication"
             # )
+            raise CommandError(
+                "CRITICAL ALARM: Cryptographic drift detected between regional vaults!"
+            )
         else:
             self.stdout.write("Vault replication sweep complete. 0 variances detected.")
+
+    def fetch_secondary_region_vault_checksum(self):
+        """Retrieve the remote vault checksum with retries and a timeout."""
+
+        checksum_url = os.environ.get("VAULT_SECONDARY_REGION_CHECKSUM_URL")
+        if not checksum_url:
+            raise CommandError(
+                "VAULT_SECONDARY_REGION_CHECKSUM_URL is not configured; unable to verify remote vault checksum."
+            )
+
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                response = requests.get(checksum_url, timeout=5)
+                response.raise_for_status()
+
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = response.text.strip()
+
+                if isinstance(payload, dict):
+                    remote_checksum = payload.get("checksum")
+                else:
+                    remote_checksum = payload
+
+                remote_checksum = str(remote_checksum or "").strip()
+                if not remote_checksum:
+                    raise CommandError(
+                        "Remote vault checksum response did not include a checksum value."
+                    )
+
+                return remote_checksum
+            except (requests.RequestException, CommandError) as exc:
+                last_error = exc
+                if attempt == 3:
+                    break
+
+        raise CommandError(
+            f"Unable to retrieve remote vault checksum after 3 attempts from {checksum_url}: {last_error}"
+        )

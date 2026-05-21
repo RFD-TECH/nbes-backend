@@ -232,7 +232,7 @@ class PanelVoteSerializer(serializers.ModelSerializer):
 
         model = PanelVote
         fields = ["id", "item_id", "panellist_id", "vote", "justification", "voted_at"]
-        read_only_fields = ["id", "voted_at"]
+        read_only_fields = ["id", "item_id", "panellist_id", "voted_at"]
 
 
 class VaultExportSerializer(serializers.ModelSerializer):

@@ -1,12 +1,20 @@
 ﻿"""Service functions for item draft creation, versioning, and submission."""
 
-import uuid
 import logging
+import shutil
+import subprocess
+import tempfile
+import uuid
 from datetime import timedelta
+
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.core.files import File
 from django.db import transaction
-from django.core.exceptions import ValidationError, ObjectDoesNotExist
-from django.contrib.auth import get_user_model
 from django.utils import timezone
+
+from shared.storage import get_storage_backend
+
+from .tasks import dispatch_item_status_notification
 
 from .models import Item, ItemTransition, ItemVersion, ItemComment
 from apps.audit.models import AuditEvent
@@ -92,6 +100,7 @@ def create_or_update_item_draft(
         "difficulty": item.difficulty,
         "marks": str(item.marks) if item.marks is not None else None,
         "time": item.time,
+        "source": item.source,
         "blueprint_ref": item.blueprint_ref,
         "source": item.source,
     }
@@ -179,9 +188,38 @@ def submit_item_for_review(item_id: str, author_auth: dict) -> Item:
     return item
 
 
-# In production, these would be imported from shared libraries:
-# from shared.security import scan_for_viruses
-# from shared.storage import upload_to_vault_bucket
+def scan_for_viruses(blob: bytes) -> bool:
+    """Run a best-effort ClamAV scan against an uploaded blob."""
+
+    clamscan = shutil.which("clamscan")
+    if not clamscan:
+        raise RuntimeError("Virus scanner unavailable: clamscan binary was not found.")
+
+    with tempfile.NamedTemporaryFile(suffix=".upload", delete=True) as temp_file:
+        temp_file.write(blob)
+        temp_file.flush()
+        completed = subprocess.run(
+            [clamscan, "--no-summary", temp_file.name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    if completed.returncode == 0:
+        return True
+    if completed.returncode == 1:
+        return False
+
+    raise RuntimeError(
+        completed.stderr.strip() or completed.stdout.strip() or "Virus scan failed."
+    )
+
+
+def upload_to_vault_bucket(asset_ref: str, file_obj) -> str:
+    """Persist an uploaded asset to the configured storage backend."""
+
+    storage_backend = get_storage_backend()
+    return storage_backend.save(asset_ref, File(file_obj))
 
 
 def process_asset_upload(file_obj) -> str:
@@ -206,44 +244,34 @@ def process_asset_upload(file_obj) -> str:
         A unique asset reference string to be stored on the ItemVersion.
     """
 
-    # Probe the file to ensure the caller provided a readable object. Read a
-    # single byte and then rewind so later upload routines can read from the
-    # beginning. This also prevents "unused-argument" lint warnings.
+    # Probe the file to ensure the caller provided a readable object, then scan
+    # and persist the upload before returning a vault reference.
     try:
-        _ = file_obj.read(
-            1
-        )  # Read a single byte to probe readability; intentionally unused.
+        file_bytes = file_obj.read()
     except Exception as exc:
-        # Re-raise as ValueError to keep the service-level API consistent,
-        # while preserving the original exception context.
-        raise ValueError(
-            "Provided file_obj is not a readable file-like object"
-        ) from exc
-    finally:
-        # Always attempt to rewind; safe for objects that support seek().
-        try:
-            file_obj.seek(0)
-        except (AttributeError, OSError, ValueError):
-            pass
+        raise ValueError("Provided file_obj is not a readable file-like object") from exc
 
-    # Virus Scan Gate (mocked for local/dev).
-    # call such as for production:
-    # is_clean = scan_for_viruses(file_obj.read())
-    is_clean = True
+    try:
+        file_obj.seek(0)
+    except (AttributeError, OSError, ValueError):
+        pass
+
+    is_clean = scan_for_viruses(file_bytes)
+
+    try:
+        file_obj.seek(0)
+    except (AttributeError, OSError, ValueError):
+        pass
 
     if not is_clean:
-        # If a scanner indicates infection, reject the upload and surface an
-        # explicit error so callers can handle quarantining and notifications.
         raise ValueError("File failed virus scan. Upload rejected and quarantined.")
 
-    # The unique ID (the asset_ref) to reference the stored blob.
     asset_ref = f"asset_{uuid.uuid4().hex}"
 
-    # production we would call upload_to_vault_bucket(asset_ref, file_obj) after
-    # rewinding the file:
-    # file_obj.seek(0)
-    # file_obj.seek(0)
-    # upload_to_vault_bucket(asset_ref, file_obj)
+    try:
+        upload_to_vault_bucket(asset_ref, file_obj)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to upload asset {asset_ref} to vault storage.") from exc
 
     return asset_ref
 
@@ -330,8 +358,8 @@ def restore_item_version(item_id: str, version_id: str, actor_auth: dict) -> Ite
     item.cognitive_level = snapshot.get("cognitive_level", item.cognitive_level)
     item.difficulty = snapshot.get("difficulty", item.difficulty)
     item.time = snapshot.get("time", item.time)
-    item.blueprint_ref = snapshot.get("blueprint_ref", item.blueprint_ref)
     item.source = snapshot.get("source", item.source)
+    item.blueprint_ref = snapshot.get("blueprint_ref", item.blueprint_ref)
 
     marks_val = snapshot.get("marks")
     item.marks = float(marks_val) if marks_val else None
@@ -558,9 +586,13 @@ def register_panel_vote(
         item.status = "Approved"  # Automatically advances status and locks for use
         item.save(update_fields=["status"])
 
-        # Fire async notification for Approval
-        dispatch_item_status_notification.delay(
-            str(item.id), str(item.author_id_id), "APPROVED"
+        # Fire async notification only after the transaction commits.
+        transaction.on_commit(
+            lambda item_id=str(item.id), author_id=str(item.author_id_id): dispatch_item_status_notification.delay(
+                item_id,
+                author_id,
+                "APPROVED",
+            )
         )
 
         # Log forensic snapshot to security audit
@@ -582,11 +614,13 @@ def register_panel_vote(
 
         # Consolidate rejection rationale for the 5-minute notification trigger
         consolidated_rationale = [v.justification for v in votes.filter(vote="Reject")]
-        dispatch_item_status_notification.delay(
-            str(item.id),
-            str(item.author_id_id),
-            "REJECTED",
-            rationales=consolidated_rationale,
+        transaction.on_commit(
+            lambda item_id=str(item.id), author_id=str(item.author_id_id), rationales=consolidated_rationale: dispatch_item_status_notification.delay(
+                item_id,
+                author_id,
+                "REJECTED",
+                rationales=rationales,
+            )
         )
 
         AuditEvent.record(

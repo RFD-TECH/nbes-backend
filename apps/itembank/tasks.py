@@ -16,14 +16,14 @@ logger = logging.getLogger(__name__)
 # Retry up to 3 times, wait 60 seconds between tries.
 # This guarantees delivery within the 5-minute SLA even if the network blips.
 @shared_task(
-    bind=False,
+    bind=True,
     max_retries=3,
     default_retry_delay=60,
     autoretry_for=(
         requests.exceptions.RequestException,
     ),  # Automatically catch timeouts/500s
 )
-def dispatch_item_status_notification(item_id, author_id, new_status, rationales=None):
+def dispatch_item_status_notification(self, item_id, author_id, new_status, rationales=None):
     """
     Background worker task to dispatch SLA-bound notifications to System 14.
     """
@@ -46,10 +46,13 @@ def dispatch_item_status_notification(item_id, author_id, new_status, rationales
         },
     }
 
+    idempotency_key = getattr(self.request, "id", None) or f"{item_id}:{author_id}:{new_status}"
+
     # Configure the secure connection to System 14
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {settings.SYSTEM_14_SERVICE_TOKEN}",
+        "Idempotency-Key": idempotency_key,
     }
 
     endpoint = f"{settings.SYSTEM_14_BASE_URL}/api/v1/dispatch/"

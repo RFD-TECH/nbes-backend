@@ -39,6 +39,28 @@ from .serializers import AssetUploadSerializer
 from .services import process_asset_upload
 
 
+def _validation_error_message(exc: ValidationError) -> str:
+    """Render Django validation errors safely across Django versions."""
+
+    messages = getattr(exc, "messages", None)
+    if messages:
+        return " ".join(str(message) for message in messages)
+
+    message_dict = getattr(exc, "message_dict", None)
+    if isinstance(message_dict, dict):
+        parts = []
+        for field, values in message_dict.items():
+            if isinstance(values, (list, tuple, set)):
+                rendered_values = ", ".join(str(value) for value in values)
+            else:
+                rendered_values = str(values)
+            parts.append(f"{field}: {rendered_values}")
+        if parts:
+            return " ".join(parts)
+
+    return str(exc)
+
+
 @extend_schema_view(
     partial_update=extend_schema(
     ),
@@ -142,7 +164,8 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
         except ValidationError as e:
             # Catches the Metadata Guard failure
             return error_response(
-                str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+                _validation_error_message(e),
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
     @action(detail=True, methods=["get"])
@@ -220,17 +243,17 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
         try:
             # Verify the item actually exists
             item = Item.objects.get(id=pk)
-
-            # Verify the provided version belongs to this item (prevent cross-item comments)
-            version_id = serializer.validated_data.get(
-                "item_version_id"
-            ) or request.data.get("item_version_id")
-            if version_id and not item.versions.filter(id=version_id).exists():
+            if not item.current_version_id:
                 return error_response(
-                    "Version does not belong to this item.", status_code=400
+                    "Item has no active version.", status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
                 )
 
-            comment = serializer.save(created_by_id=request.auth["sub"])
+            current_version = item.versions.get(id=item.current_version_id)
+
+            comment = serializer.save(
+                created_by_id=request.auth["sub"],
+                item_version_id=current_version,
+            )
             return success_response(
                 data=ItemCommentSerializer(comment).data,
                 message="Annotation added successfully.",
@@ -288,6 +311,11 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
             return success_response(
                 data={"item_id": str(item.id), "status": item.status},
                 message="Panel verdict recorded cleanly.",
+            )
+        except ValidationError as e:
+            return error_response(
+                _validation_error_message(e),
+                status_code=status.HTTP_400_BAD_REQUEST,
             )
         except ValueError as e:
             return error_response(
@@ -389,6 +417,10 @@ class VaultOperationsViewSet(viewsets.GenericViewSet):
             return success_response(
                 data={"request_id": str(req.id), "status": req.status},
                 message="Dual-control authorization verified. Vault export sequence unlocked.",
+            )
+        except ObjectDoesNotExist:
+            return error_response(
+                "Export request not found.", status_code=status.HTTP_404_NOT_FOUND
             )
         except ValueError as e:
             return error_response(
