@@ -14,7 +14,11 @@ $$ LANGUAGE plpgsql;
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_trigger WHERE tgname = 'audit_event_block_update'
+    SELECT 1
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+     WHERE t.tgname = 'audit_event_block_update'
+       AND c.relname = 'audit_auditevent'
   ) THEN
     CREATE TRIGGER audit_event_block_update
       BEFORE UPDATE ON audit_auditevent
@@ -22,7 +26,11 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1 FROM pg_trigger WHERE tgname = 'audit_event_block_delete'
+    SELECT 1
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+     WHERE t.tgname = 'audit_event_block_delete'
+       AND c.relname = 'audit_auditevent'
   ) THEN
     CREATE TRIGGER audit_event_block_delete
       BEFORE DELETE ON audit_auditevent

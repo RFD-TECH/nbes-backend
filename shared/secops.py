@@ -75,6 +75,7 @@ def record_security_event(
                     "indicators": inds,
                     "ip_address": ip_address or None,
                     "actor_id": str(actor_id) if actor_id else None,
+                    "request_id": str(request_id) if request_id else None,
                     "occurred_at": event.occurred_at.isoformat(),
                 },
                 topic="nbes.secops",

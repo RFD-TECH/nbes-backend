@@ -165,10 +165,18 @@ class IdempotencyKeyMiddleware:
         if cached is not None:
             return self._replay(cached, request)
 
-        response = self.get_response(request)
-        if response.status_code < 500:
-            self._store(cache_key, response)
-        return response
+        reservation_key = f"{cache_key}:inflight"
+        reservation_ttl = getattr(settings, "IDEMPOTENCY_RESERVATION_TTL_SECONDS", 30)
+        if not cache.add(reservation_key, "1", timeout=reservation_ttl):
+            return self._in_progress(request)
+
+        try:
+            response = self.get_response(request)
+            if response.status_code < 500:
+                self._store(cache_key, response)
+            return response
+        finally:
+            cache.delete(reservation_key)
 
     def _applies(self, request) -> bool:
         if not request.path.startswith("/api/"):
@@ -228,6 +236,21 @@ class IdempotencyKeyMiddleware:
                 "meta": {"request_id": request_id},
             },
             status=400,
+        )
+
+    @staticmethod
+    def _in_progress(request) -> JsonResponse:
+        request_id = str(getattr(request, "request_id", ""))
+        return JsonResponse(
+            {
+                "success": False,
+                "error": {
+                    "code": "IDEMPOTENCY_KEY_IN_PROGRESS",
+                    "message": "Another request is already processing this Idempotency-Key.",
+                },
+                "meta": {"request_id": request_id},
+            },
+            status=409,
         )
 
 

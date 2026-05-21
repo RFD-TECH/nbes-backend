@@ -54,24 +54,24 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
+    # Injects X-Request-ID and captures IP/user-agent for audit events.
+    # See shared/middleware.py
+    "shared.middleware.AuditMiddleware",
+    # Edge throttle and 24h IP block. Counts rejected (401/403/429)
+    # responses. Runs near the top of the chain so blocks short-circuit
+    # before auth/DB work happens.
+    "shared.middleware.EdgeRateLimitMiddleware",
+    # Enforces Idempotency-Key on state-mutating API calls. Must run after
+    # AuditMiddleware so cache keys can scope on the request_id-derived
+    # correlation surface; runs before DRF auth so anonymous retries also
+    # dedupe.
+    "shared.middleware.IdempotencyKeyMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    # Injects X-Request-ID and captures IP/user-agent for audit events.
-    # See shared/middleware.py
-    "shared.middleware.AuditMiddleware",
-    # Enforces Idempotency-Key on state-mutating API calls. Must run after
-    # AuditMiddleware so cache keys can scope on the request_id-derived
-    # correlation surface; runs before DRF auth so anonymous retries also
-    # dedupe.
-    "shared.middleware.IdempotencyKeyMiddleware",
-    # Edge throttle and 24h IP block. Counts rejected (401/403/429)
-    # responses. Runs near the top of the chain so blocks short-circuit
-    # before auth/DB work happens.
-    "shared.middleware.EdgeRateLimitMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"

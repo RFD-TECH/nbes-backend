@@ -12,9 +12,13 @@ Or the factory form (lets DRF instantiate without arguments)::
 
 Every denial emits an ``AUTHZ_DENIED`` AuditEvent per the NBES blueprint §4.
 """
+import logging
+
 from rest_framework.permissions import BasePermission
 
 from shared import rbac
+
+logger = logging.getLogger(__name__)
 
 
 def _record_denial(request, codename: str) -> None:
@@ -50,7 +54,7 @@ def _record_denial(request, codename: str) -> None:
             indicators=indicators,
         )
     except Exception:
-        pass
+        logger.exception("secops.record_security_event failed")
 
 
 class HasPermission(BasePermission):

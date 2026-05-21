@@ -31,13 +31,17 @@ def add(apps, schema_editor):
     for codename, role_names in GRANTS.items():
         try:
             permission = Permission.objects.get(codename=codename)
-        except Permission.DoesNotExist:
-            continue
+        except Permission.DoesNotExist as exc:
+            raise RuntimeError(
+                f"Required permission {codename!r} was not created."
+            ) from exc
         for role_name in role_names:
             try:
                 role = Role.objects.get(name=role_name)
-            except Role.DoesNotExist:
-                continue
+            except Role.DoesNotExist as exc:
+                raise RuntimeError(
+                    f"Required role {role_name!r} does not exist."
+                ) from exc
             RolePermission.objects.get_or_create(role=role, permission=permission)
 
 

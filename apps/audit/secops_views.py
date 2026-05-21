@@ -46,6 +46,13 @@ _WINDOW_TO_SECONDS = {
     "7d":  7 * 24 * 60 * 60,
 }
 
+_AUTH_FAILURE_CATEGORIES = [
+    "auth_token_invalid",
+    "auth_token_expired",
+    "auth_audience_mismatch",
+    "authz_denied",
+]
+
 
 def _envelope(data, request, status_code=status.HTTP_200_OK):
     return Response(
@@ -130,7 +137,10 @@ class AuthFailuresView(APIView):
             )
 
         since = timezone.now() - timedelta(seconds=seconds)
-        queryset = SecurityEvent.objects.filter(occurred_at__gte=since)
+        queryset = SecurityEvent.objects.filter(
+            occurred_at__gte=since,
+            category__in=_AUTH_FAILURE_CATEGORIES,
+        )
         by_category = dict(
             queryset.values_list("category")
             .annotate(c=Count("id"))

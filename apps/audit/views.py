@@ -5,6 +5,7 @@ from datetime import datetime, time, timedelta, timezone as py_timezone
 
 from django.db.models import Q
 from django.http import StreamingHttpResponse
+from django.utils import timezone
 from django.utils.dateparse import parse_date
 from drf_spectacular.utils import (
     OpenApiExample,
@@ -256,7 +257,9 @@ class AuditExportView(APIView):
             if not _has_export_window(request.query_params)
             else None
         )
+        upper_bound = timezone.now()
         q = _audit_export_query(request.query_params, default_bounds=default_bounds)
+        q &= Q(created_at__lte=upper_bound)
         queryset = AuditEvent.objects.filter(q).order_by("id").iterator(chunk_size=500)
 
         _meta_audit(
