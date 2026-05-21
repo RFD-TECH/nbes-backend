@@ -100,6 +100,26 @@ class Item(models.Model):
         status = getattr(self, "status", "unknown")
         return f"{str(item_type).upper()} Item {self.id} ({status})"
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(
+                    status__in=[
+                        "Draft",
+                        "Submitted",
+                        "In Review",
+                        "Reviewed",
+                        "Revised",
+                        "Moderation Panel",
+                        "Approved",
+                        "Rejected",
+                        "Locked for Use",
+                    ]
+                ),
+                name="item_status_valid",
+            )
+        ]
+
 
 class ItemVersion(models.Model):
     """Stores a historical version of an Item.
@@ -198,6 +218,18 @@ class ItemTransition(models.Model):
 
     def __str__(self):
         return f"Transition {self.from_state} -> {self.to_state} on {self.occurred_at}"
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(from_state__in=[c[0] for c in Item.Status.choices]),
+                name="itemtransition_from_state_valid",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(to_state__in=[c[0] for c in Item.Status.choices]),
+                name="itemtransition_to_state_valid",
+            ),
+        ]
 
 
 class PanelVote(models.Model):

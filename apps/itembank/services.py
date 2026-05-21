@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+import io
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
@@ -205,12 +206,18 @@ def scan_for_viruses(blob: bytes) -> bool:
     with tempfile.NamedTemporaryFile(suffix=".upload", delete=True) as temp_file:
         temp_file.write(blob)
         temp_file.flush()
-        completed = subprocess.run(
-            [clamscan, "--no-summary", temp_file.name],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                [clamscan, "--no-summary", temp_file.name],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired as exc:
+            logger.error("Virus scan timeout for temp file %s: %s", temp_file.name, exc)
+            # Treat scan timeout as a failed (non-clean) result to be conservative
+            return False
 
     if completed.returncode == 0:
         return True
@@ -260,17 +267,21 @@ def process_asset_upload(file_obj) -> str:
             "Provided file_obj is not a readable file-like object"
         ) from exc
 
+    # Ensure we have a fresh, seekable stream. If the original file-like
+    # object does not support seek, recreate a BytesIO from the raw bytes.
     try:
         file_obj.seek(0)
     except (AttributeError, OSError, ValueError):
-        pass
+        file_obj = io.BytesIO(file_bytes)
 
     is_clean = scan_for_viruses(file_bytes)
 
+    # Rewind or recreate the stream before upload to ensure the upload sees
+    # the full content at position 0.
     try:
         file_obj.seek(0)
     except (AttributeError, OSError, ValueError):
-        pass
+        file_obj = io.BytesIO(file_bytes)
 
     if not is_clean:
         raise ValueError("File failed virus scan. Upload rejected and quarantined.")
@@ -579,6 +590,10 @@ def register_panel_vote(
             f"Justification narrative must be at least 30 words. Current count: {word_count}"
         )
 
+    # Prevent duplicate panellist votes (unique_together enforced at DB level).
+    if PanelVote.objects.filter(item_id=item, panellist_id=panellist_id).exists():
+        raise ValueError("This panellist has already voted on this item.")
+
     # Save the vote
     PanelVote.objects.create(
         item_id=item,
@@ -643,8 +658,18 @@ def register_panel_vote(
             },
         )
     elif reject_count >= 2:
+        previous_status = item.status
         item.status = Item.Status.REJECTED
         item.save(update_fields=["status"])
+
+        # Record workflow transition for the consensual rejection
+        ItemTransition.objects.create(
+            item_id=item,
+            from_state=previous_status,
+            to_state=Item.Status.REJECTED,
+            actor_id=panellist_id,
+            justification="Consensual panel rejection",
+        )
 
         # Consolidate rejection rationale for the 5-minute notification trigger
         consolidated_rationale = [v.justification for v in votes.filter(vote="Reject")]

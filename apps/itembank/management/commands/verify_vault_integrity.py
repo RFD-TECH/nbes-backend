@@ -1,7 +1,7 @@
 """Management command to verify vault replication integrity.
 
 This module provides a Django management command that computes a
-cryptographic checksum over approved Item records in the local
+cryptographic checksum over "locked for use" Item records in the local
 vault and compares that checksum to a remote/replica checksum to
 detect cross-region replication drift.
 """
@@ -20,7 +20,7 @@ class Command(BaseCommand):
     """Django management command to sweep vault state and detect drift.
 
     The command computes a deterministic SHA-256 fingerprint of the
-    current set of approved items by concatenating each item's id
+    current set of locked-for-use items by concatenating each item's id
     and audit_hash in id order. It then compares that fingerprint to
     a replica/remote fingerprint to detect replication inconsistencies.
     """
