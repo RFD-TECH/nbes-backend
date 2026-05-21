@@ -1,0 +1,19 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches:
+      - dev
+
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}   # e.g. ghcr.io/your-org/your-repo
+
+
+jobs:
+
+  # 1. Build & push image to GitHub Container Registry
+
+
+  # 2. Deploy to Kubernetes on the VPS
