@@ -434,7 +434,7 @@ class VaultOperationsViewSet(viewsets.GenericViewSet):
         User = get_user_model()
         try:
             requester = User.objects.get(keycloak_sub=request.auth["sub"])
-        except ObjectDoesNotExist:
+        except (ObjectDoesNotExist, FieldError, KeyError):
             return error_response(
                 "Requester not found.",
                 status_code=status.HTTP_404_NOT_FOUND,

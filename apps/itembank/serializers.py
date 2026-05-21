@@ -439,5 +439,4 @@ class RuleBasedPaperSerializer(serializers.Serializer):
         return validated_data
 
     def update(self, instance, validated_data):
-        instance.update(validated_data)
-        return instance
+        raise NotImplementedError("Update is not supported by this serializer.")
