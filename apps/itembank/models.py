@@ -250,7 +250,7 @@ class VaultExportRequest(models.Model):
     ]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     scope = models.CharField(max_length=255)
-    purpose = models.CharField(max_length=255, null=True, blank=True)
+    purpose = models.CharField(max_length=255)
     requester_id = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.DO_NOTHING,
@@ -263,7 +263,7 @@ class VaultExportRequest(models.Model):
         null=True,
         blank=True,
     )
-    status = models.CharField(max_length=50, choices=STATUS_CHOICES)
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default="Pending")
     expires_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -317,9 +317,11 @@ class ItemUsage(models.Model):
         Item,
         on_delete=models.CASCADE,
         related_name="usage_history",
+        null=True,
+        blank=True,
     )
     sitting_ref = models.CharField(max_length=255)
-    count = models.IntegerField()
+    count = models.IntegerField(default=1)
     facility_index = models.DecimalField(
         max_digits=5,
         decimal_places=4,

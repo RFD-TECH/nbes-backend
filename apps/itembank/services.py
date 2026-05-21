@@ -7,6 +7,7 @@ import tempfile
 import uuid
 from datetime import timedelta
 
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.core.files import File
 from django.db import transaction
@@ -16,7 +17,14 @@ from shared.storage import get_storage_backend
 
 from .tasks import dispatch_item_status_notification
 
-from .models import Item, ItemTransition, ItemVersion, ItemComment
+from .models import (
+    Item,
+    ItemTransition,
+    ItemVersion,
+    ItemComment,
+    PanelVote,
+    VaultExportRequest,
+)
 from apps.audit.models import AuditEvent
 from workflow.guards import has_mandatory_metadata
 
@@ -102,7 +110,6 @@ def create_or_update_item_draft(
         "time": item.time,
         "source": item.source,
         "blueprint_ref": item.blueprint_ref,
-        "source": item.source,
     }
 
     # For new items, default asset_refs to empty list if none provided.
@@ -249,7 +256,9 @@ def process_asset_upload(file_obj) -> str:
     try:
         file_bytes = file_obj.read()
     except Exception as exc:
-        raise ValueError("Provided file_obj is not a readable file-like object") from exc
+        raise ValueError(
+            "Provided file_obj is not a readable file-like object"
+        ) from exc
 
     try:
         file_obj.seek(0)
@@ -271,7 +280,9 @@ def process_asset_upload(file_obj) -> str:
     try:
         upload_to_vault_bucket(asset_ref, file_obj)
     except Exception as exc:
-        raise RuntimeError(f"Failed to upload asset {asset_ref} to vault storage.") from exc
+        raise RuntimeError(
+            f"Failed to upload asset {asset_ref} to vault storage."
+        ) from exc
 
     return asset_ref
 
@@ -570,7 +581,7 @@ def register_panel_vote(
 
     # Save the vote
     PanelVote.objects.create(
-        item=item,
+        item_id=item,
         panellist_id=panellist_id,
         vote=vote_type,
         justification=justification,
@@ -588,10 +599,12 @@ def register_panel_vote(
 
         # Fire async notification only after the transaction commits.
         transaction.on_commit(
-            lambda item_id=str(item.id), author_id=str(item.author_id_id): dispatch_item_status_notification.delay(
-                item_id,
-                author_id,
-                "APPROVED",
+            lambda item_id=str(item.id), author_id=str(item.author_id_id): (
+                dispatch_item_status_notification.delay(
+                    item_id,
+                    author_id,
+                    "APPROVED",
+                )
             )
         )
 
@@ -615,11 +628,13 @@ def register_panel_vote(
         # Consolidate rejection rationale for the 5-minute notification trigger
         consolidated_rationale = [v.justification for v in votes.filter(vote="Reject")]
         transaction.on_commit(
-            lambda item_id=str(item.id), author_id=str(item.author_id_id), rationales=consolidated_rationale: dispatch_item_status_notification.delay(
-                item_id,
-                author_id,
-                "REJECTED",
-                rationales=rationales,
+            lambda item_id=str(item.id), author_id=str(item.author_id_id), rationales=consolidated_rationale: (
+                dispatch_item_status_notification.delay(
+                    item_id,
+                    author_id,
+                    "REJECTED",
+                    rationales=rationales,
+                )
             )
         )
 
@@ -639,6 +654,12 @@ def execute_vault_cosign(request_id: str, cosigner_id: str) -> VaultExportReques
     """
     Co-signs and executes an export request with strict anti-circumvention validations.
     """
+    User = get_user_model()
+    try:
+        cosigner_user = User.objects.get(keycloak_sub=cosigner_id)
+    except ObjectDoesNotExist as exc:
+        raise ValueError("Cosigner user not found for provided auth sub.") from exc
+
     req = VaultExportRequest.objects.select_for_update().get(id=request_id)
 
     if req.status != "Pending":
@@ -651,13 +672,13 @@ def execute_vault_cosign(request_id: str, cosigner_id: str) -> VaultExportReques
         raise ValueError("The 72-hour validation window for this request has expired.")
 
     # Prevent self-signing anti-circumvention rule
-    if str(req.requester_id) == str(cosigner_id):
+    if req.requester_id_id == cosigner_user.id:
         raise ValueError(
             "Security Boundary Exception: Initiating officer cannot act as the co-signing authoriser."
         )
 
     # Execute request
-    req.cosigner_id = cosigner_id
+    req.cosigner_id = cosigner_user
     req.status = "Executed"
     req.save()
 

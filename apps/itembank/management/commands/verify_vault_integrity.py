@@ -8,6 +8,7 @@ detect cross-region replication drift.
 
 import hashlib
 import os
+from urllib.parse import urlparse
 
 import requests
 from django.core.management.base import BaseCommand, CommandError
@@ -84,6 +85,13 @@ class Command(BaseCommand):
             raise CommandError(
                 "VAULT_SECONDARY_REGION_CHECKSUM_URL is not configured; unable to verify remote vault checksum."
             )
+        parsed = urlparse(checksum_url)
+        if parsed.scheme.lower() != "https":
+            raise CommandError("VAULT_SECONDARY_REGION_CHECKSUM_URL must use HTTPS.")
+        if not parsed.netloc:
+            raise CommandError(
+                "VAULT_SECONDARY_REGION_CHECKSUM_URL is invalid; host is missing."
+            )
 
         last_error = None
         for attempt in range(1, 4):
@@ -114,5 +122,5 @@ class Command(BaseCommand):
                     break
 
         raise CommandError(
-            f"Unable to retrieve remote vault checksum after 3 attempts from {checksum_url}: {last_error}"
+            f"Remote vault checksum retrieval failed after 3 attempts: {last_error}"
         )

@@ -257,4 +257,11 @@ class VaultExportSerializer(serializers.ModelSerializer):
             "expires_at",
             "created_at",
         ]
-        read_only_fields = ["id", "status", "expires_at", "created_at", "cosigner_id"]
+        read_only_fields = [
+            "id",
+            "requester_id",
+            "status",
+            "expires_at",
+            "created_at",
+            "cosigner_id",
+        ]

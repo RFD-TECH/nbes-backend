@@ -2,11 +2,10 @@
 
 from datetime import timedelta
 
+from django.contrib.auth import get_user_model
 from rest_framework import viewsets, status
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser
-from rest_framework.response import Response
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.utils import timezone
 from shared.permissions import has_permission
@@ -62,18 +61,16 @@ def _validation_error_message(exc: ValidationError) -> str:
 
 
 @extend_schema_view(
-    partial_update=extend_schema(
-    ),
+    partial_update=extend_schema(),
     submit=extend_schema(
         request=None,
     ),
-    versions=extend_schema(
-    ),
+    versions=extend_schema(),
     restore=extend_schema(
         request=None,
         parameters=[
             OpenApiParameter("version_id", OpenApiTypes.INT, OpenApiParameter.PATH),
-        ]
+        ],
     ),
     comments=extend_schema(
         request=ItemCommentSerializer,
@@ -82,7 +79,7 @@ def _validation_error_message(exc: ValidationError) -> str:
         request=SuggestionDecisionSerializer,
         parameters=[
             OpenApiParameter("suggestion_id", OpenApiTypes.INT, OpenApiParameter.PATH),
-        ]
+        ],
     ),
     votes=extend_schema(
         request=PanelVoteSerializer,
@@ -245,7 +242,8 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
             item = Item.objects.get(id=pk)
             if not item.current_version_id:
                 return error_response(
-                    "Item has no active version.", status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+                    "Item has no active version.",
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 )
 
             current_version = item.versions.get(id=item.current_version_id)
@@ -388,10 +386,20 @@ class VaultOperationsViewSet(viewsets.GenericViewSet):
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
 
+        User = get_user_model()
+        try:
+            requester = User.objects.get(keycloak_sub=request.auth["sub"])
+        except ObjectDoesNotExist:
+            return error_response(
+                "Requester not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
         req = VaultExportRequest.objects.create(
             scope=serializer.validated_data["scope"],
             purpose=serializer.validated_data["purpose"],
-            requester_id=request.auth["sub"],
+            requester_id=requester,
+            status="Pending",
             expires_at=timezone.now() + timedelta(hours=72),
         )
 
