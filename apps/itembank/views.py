@@ -1,16 +1,19 @@
 ﻿"""View sets for item authoring and submission workflows."""
 
-import json
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
-from django.http import FileResponse, HttpResponse, JsonResponse
+from django.http import HttpResponse
+from django.db.models import Count, OuterRef, Subquery
 from rest_framework import viewsets, status, filters as drf_filters
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser
 from django.core.exceptions import FieldError, ObjectDoesNotExist, ValidationError
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.exceptions import NotFound
+from rest_framework.request import Request
+from rest_framework.test import APIRequestFactory
 from shared.permissions import has_permission
 from shared.exceptions import error_response, success_response
 from drf_spectacular.utils import (
@@ -21,7 +24,7 @@ from drf_spectacular.utils import (
 )
 
 from .filters import ItemFilter
-from .models import Item, Paper, SavedSearch, VaultExportRequest
+from .models import Item, ItemUsage, ItemVersion, Paper, SavedSearch, VaultExportRequest
 from .serializers import (
     ItemDraftSerializer,
     ItemListSerializer,
@@ -75,6 +78,31 @@ def _validation_error_message(exc: ValidationError) -> str:
             return " ".join(parts)
 
     return str(exc)
+
+
+def _item_search_queryset(base_qs):
+    latest_usage = ItemUsage.objects.filter(item_id=OuterRef("pk")).order_by(
+        "-recorded_at"
+    )
+    current_version = ItemVersion.objects.filter(
+        item_id=OuterRef("pk"), id=OuterRef("current_version_id")
+    )
+    return base_qs.annotate(
+        usage_count=Count("usage_history", distinct=True),
+        latest_facility_index=Subquery(latest_usage.values("facility_index")[:1]),
+        latest_discrimination_index=Subquery(
+            latest_usage.values("discrimination_index")[:1]
+        ),
+        current_version_content=Subquery(current_version.values("content")[:1]),
+    )
+
+
+def _resolve_request_user(request):
+    User = get_user_model()
+    try:
+        return User.objects.get(keycloak_sub=request.auth["sub"])
+    except (FieldError, KeyError, ObjectDoesNotExist):
+        return None
 
 
 @extend_schema_view(
@@ -406,7 +434,7 @@ class VaultOperationsViewSet(viewsets.GenericViewSet):
         User = get_user_model()
         try:
             requester = User.objects.get(keycloak_sub=request.auth["sub"])
-        except ObjectDoesNotExist:
+        except (ObjectDoesNotExist, FieldError, KeyError):
             return error_response(
                 "Requester not found.",
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -453,7 +481,6 @@ class VaultOperationsViewSet(viewsets.GenericViewSet):
             )
 
 
-
 @extend_schema_view(
     create=extend_schema(request=ManualPaperSerializer),
     generate_rule_based=extend_schema(request=RuleBasedPaperSerializer),
@@ -470,7 +497,10 @@ class PaperViewSet(viewsets.GenericViewSet):
 
     def _resolve_user(self, request):
         User = get_user_model()
-        return User.objects.get(keycloak_sub=request.auth["sub"])
+        try:
+            return User.objects.get(keycloak_sub=request.auth["sub"])
+        except (FieldError, KeyError) as exc:
+            raise ObjectDoesNotExist("Requester not found.") from exc
 
     def create(self, request):
         """Manually construct a paper from a curated list of locked items."""
@@ -575,7 +605,9 @@ class PaperViewSet(viewsets.GenericViewSet):
     def export_pdf(self, request, pk=None):
         paper = self._get_paper_or_404(pk)
         if paper is None:
-            return error_response("Paper not found.", status_code=status.HTTP_404_NOT_FOUND)
+            return error_response(
+                "Paper not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
         try:
             user = self._resolve_user(request)
         except ObjectDoesNotExist:
@@ -585,16 +617,16 @@ class PaperViewSet(viewsets.GenericViewSet):
         pdf_bytes = export_paper_pdf(paper)
         record_paper_export(paper, user=user, fmt="pdf", request=request)
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
-        response["Content-Disposition"] = (
-            f'attachment; filename="paper-{paper.id}.pdf"'
-        )
+        response["Content-Disposition"] = f'attachment; filename="paper-{paper.id}.pdf"'
         return response
 
     @action(detail=True, methods=["get"], url_path="export/word")
     def export_word(self, request, pk=None):
         paper = self._get_paper_or_404(pk)
         if paper is None:
-            return error_response("Paper not found.", status_code=status.HTTP_404_NOT_FOUND)
+            return error_response(
+                "Paper not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
         try:
             user = self._resolve_user(request)
         except ObjectDoesNotExist:
@@ -604,9 +636,7 @@ class PaperViewSet(viewsets.GenericViewSet):
         try:
             docx_bytes = export_paper_docx(paper)
         except RuntimeError as exc:
-            return error_response(
-                str(exc), status_code=status.HTTP_501_NOT_IMPLEMENTED
-            )
+            return error_response(str(exc), status_code=status.HTTP_501_NOT_IMPLEMENTED)
         record_paper_export(paper, user=user, fmt="docx", request=request)
         response = HttpResponse(
             docx_bytes,
@@ -624,7 +654,9 @@ class PaperViewSet(viewsets.GenericViewSet):
     def export_digital(self, request, pk=None):
         paper = self._get_paper_or_404(pk)
         if paper is None:
-            return error_response("Paper not found.", status_code=status.HTTP_404_NOT_FOUND)
+            return error_response(
+                "Paper not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
         try:
             user = self._resolve_user(request)
         except ObjectDoesNotExist:
@@ -633,9 +665,7 @@ class PaperViewSet(viewsets.GenericViewSet):
             )
         payload = export_paper_digital(paper)
         record_paper_export(paper, user=user, fmt="digital", request=request)
-        return success_response(
-            data=payload, message="Digital paper export ready."
-        )
+        return success_response(data=payload, message="Digital paper export ready.")
 
 
 def _rbac_scoped_item_queryset(request):
@@ -682,17 +712,16 @@ class ItemSearchViewSet(viewsets.ReadOnlyModelViewSet):
     ]
     filterset_class = ItemFilter
     # SRS-NBE-F02-10 keyword search must hit stem, options, rubric, metadata.
-    # Item content lives on the *current* version (versions__id=current_version_id),
-    # not all historical versions; we still expose subject/topic/blueprint_ref
-    # for metadata matching.
-    search_fields = ["subject", "topic", "blueprint_ref", "versions__content"]
+    # Item content lives on the *current* version only, not all historical
+    # versions; we still expose subject/topic/blueprint_ref for metadata matching.
+    search_fields = ["subject", "topic", "blueprint_ref", "current_version_content"]
     ordering_fields = ["subject", "topic", "difficulty", "marks", "updated_at"]
     ordering = ["subject", "topic"]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
             return Item.objects.none()
-        return _rbac_scoped_item_queryset(self.request)
+        return _item_search_queryset(_rbac_scoped_item_queryset(self.request))
 
     def list(self, request, *args, **kwargs):
         response = super().list(request, *args, **kwargs)
@@ -701,9 +730,7 @@ class ItemSearchViewSet(viewsets.ReadOnlyModelViewSet):
             action="SEARCH_EXECUTED",
             entity_type="item",
             new_state={
-                "filters": dict(
-                    getattr(request, "query_params", None) or request.GET
-                ),
+                "filters": dict(getattr(request, "query_params", None) or request.GET),
                 "result_count": (
                     response.data.get("count")
                     if isinstance(response.data, dict)
@@ -730,9 +757,7 @@ class ItemSearchViewSet(viewsets.ReadOnlyModelViewSet):
             action="SEARCH_EXPORTED",
             entity_type="item",
             new_state={
-                "filters": dict(
-                    getattr(request, "query_params", None) or request.GET
-                ),
+                "filters": dict(getattr(request, "query_params", None) or request.GET),
                 "result_count": len(rows),
             },
             ip_address=getattr(request, "ip_address", None),
@@ -761,11 +786,7 @@ class SavedSearchViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
             return SavedSearch.objects.none()
-        User = get_user_model()
-        try:
-            user = User.objects.get(keycloak_sub=self.request.auth["sub"])
-        except (ObjectDoesNotExist, FieldError):
-            user = None
+        user = _resolve_request_user(self.request)
         # Secretariat can still see *shared* searches even when their own
         # auth.User row can't be resolved (auth.User has no keycloak_sub
         # column in the current schema).
@@ -785,8 +806,9 @@ class SavedSearchViewSet(viewsets.ModelViewSet):
         return qs.order_by("-updated_at")
 
     def perform_create(self, serializer):
-        User = get_user_model()
-        user = User.objects.get(keycloak_sub=self.request.auth["sub"])
+        user = _resolve_request_user(self.request)
+        if user is None:
+            raise NotFound("Requester not found.")
         serializer.save(user=user)
         AuditEvent.record(
             actor_id=self.request.auth["sub"],
@@ -827,7 +849,7 @@ class SavedSearchViewSet(viewsets.ModelViewSet):
         """Execute the stored query under the caller's RBAC scope."""
         try:
             saved = self.get_queryset().get(id=pk)
-        except SavedSearch.DoesNotExist:
+        except (ObjectDoesNotExist, ValueError, ValidationError):
             return error_response(
                 "Saved search not found.", status_code=status.HTTP_404_NOT_FOUND
             )
@@ -835,15 +857,33 @@ class SavedSearchViewSet(viewsets.ModelViewSet):
         query = saved.query if isinstance(saved.query, dict) else {}
         # Apply the same RBAC scope the live search endpoint uses so a
         # shared saved search NEVER leaks items the viewer cannot see.
-        base_qs = _rbac_scoped_item_queryset(request)
-        filterset = ItemFilter(query, queryset=base_qs)
+        base_qs = _item_search_queryset(_rbac_scoped_item_queryset(request))
+        filter_params = {
+            key: value
+            for key, value in query.items()
+            if key not in {"search", "ordering"}
+        }
+        filterset = ItemFilter(filter_params, queryset=base_qs)
         if not filterset.is_valid():
             return error_response(
                 "Saved search contains invalid filter parameters.",
                 errors=filterset.errors,
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
-        items = filterset.qs[:200]
+        factory = APIRequestFactory()
+        raw_request = factory.get(
+            getattr(request, "path", "/api/v1/itembank/item-search/"),
+            data=query,
+        )
+        search_request = Request(raw_request)
+        setattr(search_request, "_auth", request.auth)
+        setattr(search_request, "_user", getattr(request, "user", None))
+        search_viewset = ItemSearchViewSet()
+        setattr(search_viewset, "request", search_request)
+        setattr(search_viewset, "kwargs", {})
+        setattr(search_viewset, "action", "list")
+        setattr(search_viewset, "format_kwarg", None)
+        items = search_viewset.filter_queryset(base_qs)[:200]
         data = ItemListSerializer(items, many=True).data
         AuditEvent.record(
             actor_id=(request.auth or {}).get("sub"),

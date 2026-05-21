@@ -10,6 +10,7 @@ SRS references:
 - ``vault:operate``  — SRS-NBE-F02-07 (vault export-request / cosign flows;
   NBEC Member only)
 """
+
 from django.db import migrations
 
 
@@ -28,10 +29,12 @@ GRANTS = {
 }
 
 
-def add_codenames(apps, schema_editor):
+def add_codenames(apps, _schema_editor):
     Role = apps.get_model("users", "Role")
     Permission = apps.get_model("users", "Permission")
     RolePermission = apps.get_model("users", "RolePermission")
+    missing_permissions = set()
+    missing_roles = set()
 
     for codename, description in NEW_PERMISSIONS:
         Permission.objects.get_or_create(
@@ -43,24 +46,33 @@ def add_codenames(apps, schema_editor):
         try:
             permission = Permission.objects.get(codename=codename)
         except Permission.DoesNotExist:
+            missing_permissions.add(codename)
             continue
         for role_name in role_names:
             try:
                 role = Role.objects.get(name=role_name)
             except Role.DoesNotExist:
+                missing_roles.add(role_name)
                 continue
             RolePermission.objects.get_or_create(role=role, permission=permission)
 
+    if missing_permissions or missing_roles:
+        parts = []
+        if missing_permissions:
+            parts.append(
+                "missing permissions: " + ", ".join(sorted(missing_permissions))
+            )
+        if missing_roles:
+            parts.append("missing roles: " + ", ".join(sorted(missing_roles)))
+        raise RuntimeError("RBAC migration incomplete; " + "; ".join(parts))
 
-def drop_codenames(apps, schema_editor):
+
+def drop_codenames(apps, _schema_editor):
     Permission = apps.get_model("users", "Permission")
-    Permission.objects.filter(
-        codename__in=[c for c, _ in NEW_PERMISSIONS]
-    ).delete()
+    Permission.objects.filter(codename__in=[c for c, _ in NEW_PERMISSIONS]).delete()
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("users", "0007_dashboards_manage_codename"),
     ]

@@ -10,6 +10,7 @@ validation only.
 """
 
 import json
+from types import SimpleNamespace
 
 from rest_framework import serializers
 from .models import (
@@ -314,17 +315,22 @@ class ItemListSerializer(serializers.ModelSerializer):
 
     def _latest_usage(self, obj):
         if "_latest_usage_cache" not in getattr(obj, "__dict__", {}):
-            obj.__dict__["_latest_usage_cache"] = (
-                obj.usage_history.order_by("-recorded_at").first()
+            obj.__dict__["_latest_usage_cache"] = SimpleNamespace(
+                facility_index=getattr(obj, "latest_facility_index", None),
+                discrimination_index=getattr(obj, "latest_discrimination_index", None),
             )
         return obj.__dict__["_latest_usage_cache"]
 
     def get_usage_count(self, obj) -> int:
-        return obj.usage_history.count()
+        return getattr(obj, "usage_count", 0)
 
     def get_latest_facility_index(self, obj):
         usage = self._latest_usage(obj)
-        return str(usage.facility_index) if usage and usage.facility_index is not None else None
+        return (
+            str(usage.facility_index)
+            if usage and usage.facility_index is not None
+            else None
+        )
 
     def get_latest_discrimination_index(self, obj):
         usage = self._latest_usage(obj)
@@ -362,13 +368,17 @@ class PaperSectionSerializer(serializers.Serializer):
     """Inline serializer for a single paper section (SRS-NBE-F02-08)."""
 
     name = serializers.CharField(max_length=100)
-    item_ids = serializers.ListField(
-        child=serializers.UUIDField(), allow_empty=False
-    )
-    marks = serializers.DecimalField(
-        max_digits=6, decimal_places=2, required=False
-    )
+    item_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=False)
+    marks = serializers.DecimalField(max_digits=6, decimal_places=2, required=False)
     time = serializers.IntegerField(required=False, min_value=1)
+
+    def create(self, validated_data):
+        return validated_data
+
+    def update(self, instance, validated_data):
+        raise NotImplementedError(
+            "update() is not implemented for PaperSectionSerializer"
+        )
 
 
 class ManualPaperSerializer(serializers.Serializer):
@@ -379,9 +389,7 @@ class ManualPaperSerializer(serializers.Serializer):
     mode = serializers.CharField(max_length=50)
     total_marks = serializers.DecimalField(max_digits=6, decimal_places=2)
     time_limit = serializers.IntegerField(min_value=1)
-    item_ids = serializers.ListField(
-        child=serializers.UUIDField(), allow_empty=False
-    )
+    item_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=False)
     sections = serializers.ListField(
         child=PaperSectionSerializer(), required=False, allow_empty=True
     )
@@ -404,8 +412,12 @@ class RuleBasedPaperSerializer(serializers.Serializer):
     mode = serializers.CharField()
     total_marks = serializers.DecimalField(max_digits=6, decimal_places=2)
     time_limit = serializers.IntegerField()
-    difficulty_distribution = serializers.DictField(child=serializers.IntegerField())
-    topic_coverage = serializers.DictField(child=serializers.IntegerField())
+    difficulty_distribution = serializers.DictField(
+        child=serializers.IntegerField(min_value=0, max_value=100)
+    )
+    topic_coverage = serializers.DictField(
+        child=serializers.IntegerField(min_value=0, max_value=100)
+    )
     blueprint_ref = serializers.CharField(required=False, allow_blank=True)
     variants_count = serializers.IntegerField(required=False, min_value=1, default=1)
 
@@ -427,5 +439,4 @@ class RuleBasedPaperSerializer(serializers.Serializer):
         return validated_data
 
     def update(self, instance, validated_data):
-        instance.update(validated_data)
-        return instance
+        raise NotImplementedError("Update is not supported by this serializer.")

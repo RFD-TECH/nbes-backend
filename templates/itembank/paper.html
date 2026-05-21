@@ -1,62 +1,108 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<title>{{ paper.sitting_ref }} — {{ paper.subject }}</title>
-<style>
-  @page { size: A4; margin: 22mm 18mm; }
-  body { font-family: "DejaVu Sans", sans-serif; font-size: 11pt; color: #111; }
-  h1 { font-size: 18pt; margin: 0 0 4pt 0; }
-  h2 { font-size: 13pt; margin: 18pt 0 6pt 0; }
-  .cover { text-align: center; page-break-after: always; }
-  .cover .meta { margin: 16pt 0; font-size: 12pt; }
-  .cover .meta strong { display: inline-block; min-width: 120pt; text-align: right; margin-right: 8pt; }
-  .qr { margin-top: 24pt; }
-  .qr img { width: 120pt; height: 120pt; }
-  .item { margin-bottom: 14pt; page-break-inside: avoid; }
-  .item .header { font-weight: bold; }
-  .item .body { margin-top: 4pt; white-space: pre-wrap; }
-  .footer { font-size: 9pt; color: #555; text-align: center; }
-</style>
-</head>
-<body>
-  <div class="cover">
-    <h1>{{ paper.subject }}</h1>
-    <div class="meta">
-      <div><strong>Sitting:</strong> {{ paper.sitting_ref }}</div>
-      <div><strong>Mode:</strong> {{ paper.mode }}</div>
-      <div><strong>Total marks:</strong> {{ paper.total_marks }}</div>
-      <div><strong>Time limit:</strong> {{ paper.time_limit }} minutes</div>
-      {% if paper.blueprint_ref %}
+  <head>
+    <meta charset="utf-8" />
+    <title>{{ paper.sitting_ref }} — {{ paper.subject }}</title>
+    <style>
+      @page {
+        size: A4;
+        margin: 22mm 18mm;
+      }
+      body {
+        font-family: "DejaVu Sans", sans-serif;
+        font-size: 11pt;
+        color: #111;
+      }
+      h1 {
+        font-size: 18pt;
+        margin: 0 0 4pt 0;
+      }
+      h2 {
+        font-size: 13pt;
+        margin: 18pt 0 6pt 0;
+      }
+      .cover {
+        text-align: center;
+        page-break-after: always;
+      }
+      .cover .meta {
+        margin: 16pt 0;
+        font-size: 12pt;
+      }
+      .cover .meta strong {
+        display: inline-block;
+        min-width: 120pt;
+        text-align: right;
+        margin-right: 8pt;
+      }
+      .qr {
+        margin-top: 24pt;
+      }
+      .qr img {
+        width: 120pt;
+        height: 120pt;
+      }
+      .item {
+        margin-bottom: 14pt;
+        page-break-inside: avoid;
+      }
+      .item .header {
+        font-weight: bold;
+      }
+      .item .body {
+        margin-top: 4pt;
+        white-space: pre-wrap;
+      }
+      .footer {
+        font-size: 9pt;
+        color: #555;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="cover">
+      <h1>{{ paper.subject }}</h1>
+      <div class="meta">
+        <div><strong>Sitting:</strong> {{ paper.sitting_ref }}</div>
+        <div><strong>Mode:</strong> {{ paper.mode }}</div>
+        <div><strong>Total marks:</strong> {{ paper.total_marks }}</div>
+        <div><strong>Time limit:</strong> {{ paper.time_limit }} minutes</div>
+        {% if paper.blueprint_ref %}
         <div><strong>Blueprint:</strong> {{ paper.blueprint_ref }}</div>
-      {% endif %}
-      <div><strong>Item count:</strong> {{ items|length }}</div>
-      <div><strong>Paper ID:</strong> {{ paper.id }}</div>
+        {% endif %}
+        <div><strong>Item count:</strong> {{ items|length }}</div>
+        <div><strong>Paper ID:</strong> {{ paper.id }}</div>
+      </div>
+      <div class="qr">
+        <img src="data:image/png;base64,{{ qr_code }}" alt="QR Code" />
+        <div class="footer">Scan to verify paper authenticity.</div>
+      </div>
     </div>
-    <div class="qr">
-      <img src="data:image/png;base64,{{ qr_code }}" alt="QR Code">
-      <div class="footer">Scan to verify paper authenticity.</div>
-    </div>
-  </div>
 
-  {% if sections %}
-    {% for section in sections %}
-      <h2>{{ section.name }}{% if section.marks %} — {{ section.marks }} marks{% endif %}{% if section.time %} ({{ section.time }} min){% endif %}</h2>
-      {% for item in section.items %}
-        <div class="item">
-          <div class="header">Q{{ forloop.counter }} — {{ item.marks }} marks ({{ item.difficulty|default:"—" }})</div>
-          <div class="body">{{ item.body }}</div>
-        </div>
-      {% endfor %}
-    {% endfor %}
-  {% else %}
+    {% if sections %} {% for section in sections %}
+    <h2>
+      {{ section.name }}{% if section.marks %} — {{ section.marks }} marks{%
+      endif %}{% if section.time %} ({{ section.time }} min){% endif %}
+    </h2>
+    {% for item in section.items %}
+    <div class="item">
+      <div class="header">
+        Q{{ item.question_number }} — {{ item.marks }} marks ({{
+        item.difficulty|default:"—" }})
+      </div>
+      <div class="body">{{ item.body }}</div>
+    </div>
+    {% endfor %} {% endfor %} {% else %}
     <h2>Questions</h2>
     {% for item in items %}
-      <div class="item">
-        <div class="header">Q{{ forloop.counter }} — {{ item.marks }} marks ({{ item.difficulty|default:"—" }})</div>
-        <div class="body">{{ item.body }}</div>
+    <div class="item">
+      <div class="header">
+        Q{{ item.question_number }} — {{ item.marks }} marks ({{
+        item.difficulty|default:"—" }})
       </div>
-    {% endfor %}
-  {% endif %}
-</body>
+      <div class="body">{{ item.body }}</div>
+    </div>
+    {% endfor %} {% endif %}
+  </body>
 </html>
