@@ -39,6 +39,19 @@ class Item(models.Model):
         ("practical", _("Practical")),
         ("multiple_response", _("Multiple Response")),
     ]
+
+    # SRS Phase 3 workflow states for NBE-F02-04 / NBE-F02-06.
+    class Status(models.TextChoices):
+        DRAFT = "Draft", _("Draft")
+        SUBMITTED = "Submitted", _("Submitted")
+        IN_REVIEW = "In Review", _("In Review")
+        REVIEWED = "Reviewed", _("Reviewed")
+        REVISED = "Revised", _("Revised")
+        MODERATION_PANEL = "Moderation Panel", _("Moderation Panel")
+        APPROVED = "Approved", _("Approved")
+        REJECTED = "Rejected", _("Rejected")
+        LOCKED_FOR_USE = "Locked for Use", _("Locked for Use")
+
     objects = models.Manager()
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -49,7 +62,11 @@ class Item(models.Model):
         null=True,
         blank=True,
     )  # Will point to item_version.id
-    status = models.CharField(max_length=50)
+    status = models.CharField(
+        max_length=50,
+        choices=Status.choices,
+        default=Status.DRAFT,
+    )
     blueprint_ref = models.CharField(
         max_length=255,
         null=True,
@@ -82,6 +99,26 @@ class Item(models.Model):
         item_type = getattr(self, "item_type", "item")
         status = getattr(self, "status", "unknown")
         return f"{str(item_type).upper()} Item {self.id} ({status})"
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(
+                    status__in=[
+                        "Draft",
+                        "Submitted",
+                        "In Review",
+                        "Reviewed",
+                        "Revised",
+                        "Moderation Panel",
+                        "Approved",
+                        "Rejected",
+                        "Locked for Use",
+                    ]
+                ),
+                name="item_status_valid",
+            )
+        ]
 
 
 class ItemVersion(models.Model):
@@ -174,14 +211,26 @@ class ItemTransition(models.Model):
         on_delete=models.CASCADE,
         related_name="transitions",
     )
-    from_state = models.CharField(max_length=50)
-    to_state = models.CharField(max_length=50)
+    from_state = models.CharField(max_length=50, choices=Item.Status.choices)
+    to_state = models.CharField(max_length=50, choices=Item.Status.choices)
     actor_id = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING)
     justification = models.TextField(null=True, blank=True)
     occurred_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return f"Transition {self.from_state} -> {self.to_state} on {self.occurred_at}"
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(from_state__in=[c[0] for c in Item.Status.choices]),
+                name="itemtransition_from_state_valid",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(to_state__in=[c[0] for c in Item.Status.choices]),
+                name="itemtransition_to_state_valid",
+            ),
+        ]
 
 
 class PanelVote(models.Model):
@@ -194,6 +243,7 @@ class PanelVote(models.Model):
     - voted_at: timestamp of vote.
     """
 
+    VOTE_CHOICES = [("Approve", "Approve"), ("Reject", "Reject")]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     item_id = models.ForeignKey(
         Item,
@@ -203,9 +253,18 @@ class PanelVote(models.Model):
     panellist_id = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING
     )
-    vote = models.CharField(max_length=50)
+    vote = models.CharField(max_length=50, choices=VOTE_CHOICES)
     justification = models.TextField()
     voted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "panel_vote"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["item_id", "panellist_id"],
+                name="unique_item_panellist",
+            )
+        ]  # One vote per panellist per item
 
 
 class VaultAccess(models.Model):
@@ -239,8 +298,14 @@ class VaultExportRequest(models.Model):
     - created_at: timestamp when request was created.
     """
 
+    STATUS_CHOICES = [
+        ("Pending", "Pending"),
+        ("Executed", "Executed"),
+        ("Expired", "Expired"),
+    ]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     scope = models.CharField(max_length=255)
+    purpose = models.CharField(max_length=255)
     requester_id = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.DO_NOTHING,
@@ -253,9 +318,12 @@ class VaultExportRequest(models.Model):
         null=True,
         blank=True,
     )
-    status = models.CharField(max_length=50)
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default="Pending")
     expires_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "vault_export_request"
 
 
 class Paper(models.Model):
@@ -304,9 +372,11 @@ class ItemUsage(models.Model):
         Item,
         on_delete=models.CASCADE,
         related_name="usage_history",
+        null=True,
+        blank=True,
     )
     sitting_ref = models.CharField(max_length=255)
-    count = models.IntegerField()
+    count = models.IntegerField(default=1)
     facility_index = models.DecimalField(
         max_digits=5,
         decimal_places=4,

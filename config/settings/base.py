@@ -272,3 +272,8 @@ SYSTEM_21_URL = os.environ.get("SYSTEM_21_URL", "")
 SYSTEM_21_API_KEY = os.environ.get("SYSTEM_21_API_KEY", "")
 NLEMS_URL = os.environ.get("NLEMS_URL", "")
 NLEMS_API_KEY = os.environ.get("NLEMS_API_KEY", "")
+# System 14 Integration Settings
+SYSTEM_14_BASE_URL = os.environ.get("SYSTEM_14_BASE_URL", "http://system14-svc.internal:8080")
+SYSTEM_14_SERVICE_TOKEN = os.environ.get("SYSTEM_14_SERVICE_TOKEN")
+if not SYSTEM_14_SERVICE_TOKEN:
+    raise RuntimeError("SYSTEM_14_SERVICE_TOKEN is required and must be set in the environment.")

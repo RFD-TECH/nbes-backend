@@ -1,32 +1,90 @@
 ﻿"""View sets for item authoring and submission workflows."""
 
+from datetime import timedelta
+
+from django.contrib.auth import get_user_model
 from rest_framework import viewsets, status
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser
-from rest_framework.response import Response
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
-
+from django.utils import timezone
 from shared.permissions import has_permission
 from shared.exceptions import error_response, success_response
+from drf_spectacular.utils import (
+    extend_schema,
+    extend_schema_view,
+    OpenApiParameter,
+    OpenApiTypes,
+)
 
-from .models import Item
+from .models import Item, VaultExportRequest
 from .serializers import (
     ItemDraftSerializer,
     ItemVersionSerializer,
     ItemCommentSerializer,
     SuggestionDecisionSerializer,
+    VaultExportSerializer,
+    PanelVoteSerializer,
 )
 from .services import (
     create_or_update_item_draft,
     submit_item_for_review,
     restore_item_version,
     process_suggestion_decision,
+    register_panel_vote,
+    execute_vault_cosign,
 )
 from .serializers import AssetUploadSerializer
 from .services import process_asset_upload
 
 
+def _validation_error_message(exc: ValidationError) -> str:
+    """Render Django validation errors safely across Django versions."""
+
+    messages = getattr(exc, "messages", None)
+    if messages:
+        return " ".join(str(message) for message in messages)
+
+    message_dict = getattr(exc, "message_dict", None)
+    if isinstance(message_dict, dict):
+        parts = []
+        for field, values in message_dict.items():
+            if isinstance(values, (list, tuple, set)):
+                rendered_values = ", ".join(str(value) for value in values)
+            else:
+                rendered_values = str(values)
+            parts.append(f"{field}: {rendered_values}")
+        if parts:
+            return " ".join(parts)
+
+    return str(exc)
+
+
+@extend_schema_view(
+    partial_update=extend_schema(),
+    submit=extend_schema(
+        request=None,
+    ),
+    versions=extend_schema(),
+    restore=extend_schema(
+        request=None,
+        parameters=[
+            OpenApiParameter("version_id", OpenApiTypes.INT, OpenApiParameter.PATH),
+        ],
+    ),
+    comments=extend_schema(
+        request=ItemCommentSerializer,
+    ),
+    decide_suggestion=extend_schema(
+        request=SuggestionDecisionSerializer,
+        parameters=[
+            OpenApiParameter("suggestion_id", OpenApiTypes.INT, OpenApiParameter.PATH),
+        ],
+    ),
+    votes=extend_schema(
+        request=PanelVoteSerializer,
+    ),
+)
 class ItemAuthoringViewSet(viewsets.GenericViewSet):
     """Expose draft creation, auto-save, and submission endpoints for items."""
 
@@ -103,7 +161,8 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
         except ValidationError as e:
             # Catches the Metadata Guard failure
             return error_response(
-                str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+                _validation_error_message(e),
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
     @action(detail=True, methods=["get"])
@@ -181,17 +240,18 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
         try:
             # Verify the item actually exists
             item = Item.objects.get(id=pk)
-
-            # Verify the provided version belongs to this item (prevent cross-item comments)
-            version_id = serializer.validated_data.get(
-                "item_version_id"
-            ) or request.data.get("item_version_id")
-            if version_id and not item.versions.filter(id=version_id).exists():
+            if not item.current_version_id:
                 return error_response(
-                    "Version does not belong to this item.", status_code=400
+                    "Item has no active version.",
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 )
 
-            comment = serializer.save(created_by_id=request.auth["sub"])
+            current_version = item.versions.get(id=item.current_version_id)
+
+            comment = serializer.save(
+                created_by_id=request.auth["sub"],
+                item_version_id=current_version,
+            )
             return success_response(
                 data=ItemCommentSerializer(comment).data,
                 message="Annotation added successfully.",
@@ -235,6 +295,31 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
         except ValueError as e:
             return error_response(str(e), status_code=422)
 
+    @action(detail=True, methods=["post"])
+    def votes(self, request, pk=None):
+        """Record a panel vote (accept or decline) for an item.
+        Expects a payload with 'vote' (accept/decline) and optional 'justification'.
+        """
+        vote_type = request.data.get("vote")
+        justification = request.data.get("justification")
+        panellist_id = request.auth["sub"]
+
+        try:
+            item = register_panel_vote(pk, panellist_id, vote_type, justification)
+            return success_response(
+                data={"item_id": str(item.id), "status": item.status},
+                message="Panel verdict recorded cleanly.",
+            )
+        except ValidationError as e:
+            return error_response(
+                _validation_error_message(e),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        except ValueError as e:
+            return error_response(
+                str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+
 
 class AssetViewSet(viewsets.GenericViewSet):
     """Expose asset upload endpoint for item authoring workflows."""
@@ -274,30 +359,78 @@ class AssetViewSet(viewsets.GenericViewSet):
             )
 
 
+@extend_schema_view(
+    cosign_export=extend_schema(
+        request=None,
+    )
+)
 class VaultOperationsViewSet(viewsets.GenericViewSet):
-    """Scaffold for Sprint 3.3 vault operations."""
+    """Expose vault export request and cosign operations."""
 
-    # Require authentication and project RBAC for vault operations
-    permission_classes = [IsAuthenticated, has_permission("item:create")]
+    permission_classes = [has_permission("vault:operate")]
+    serializer_class = VaultExportSerializer
 
     @action(detail=False, methods=["post"], url_path="export-requests")
-    def create_export_request(self, _request):
-        return Response(status=status.HTTP_501_NOT_IMPLEMENTED)
+    def initiate_export(self, request):
+        """Create a new vault export request.
 
-    @action(detail=True, methods=["post"])
-    def cosign(self, _request, _pk=None):
-        return Response(status=status.HTTP_501_NOT_IMPLEMENTED)
+        Stores the requested scope and purpose, assigns the authenticated
+        requester, and sets the request to expire in 72 hours.
+        """
 
+        serializer = VaultExportSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                "Invalid data",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
 
-class PaperConstructionViewSet(viewsets.GenericViewSet):
-    """Scaffold for Sprint 3.4 paper construction."""
+        User = get_user_model()
+        try:
+            requester = User.objects.get(keycloak_sub=request.auth["sub"])
+        except ObjectDoesNotExist:
+            return error_response(
+                "Requester not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
 
-    # Require authentication and project RBAC for paper construction
-    permission_classes = [IsAuthenticated, has_permission("item:create")]
+        req = VaultExportRequest.objects.create(
+            scope=serializer.validated_data["scope"],
+            purpose=serializer.validated_data["purpose"],
+            requester_id=requester,
+            status="Pending",
+            expires_at=timezone.now() + timedelta(hours=72),
+        )
 
-    def create(self, _request):
-        return Response(status=status.HTTP_501_NOT_IMPLEMENTED)
+        return success_response(
+            data={
+                "request_id": str(req.id),
+                "status": req.status,
+                "expires_at": req.expires_at,
+            },
+            message="Export request logged. Dual-control confirmation pending.",
+            status_code=status.HTTP_201_CREATED,
+        )
 
-    @action(detail=False, methods=["post"])
-    def generate(self, _request):
-        return Response(status=status.HTTP_501_NOT_IMPLEMENTED)
+    @action(detail=True, methods=["post"], url_path="cosign")
+    def cosign_export(self, request, pk=None):
+        """Approve an existing vault export request with a cosign.
+
+        Verifies the second approver and returns the updated request status
+        once dual-control authorization has been completed.
+        """
+        try:
+            req = execute_vault_cosign(pk, cosigner_id=request.auth["sub"])
+            return success_response(
+                data={"request_id": str(req.id), "status": req.status},
+                message="Dual-control authorization verified. Vault export sequence unlocked.",
+            )
+        except ObjectDoesNotExist:
+            return error_response(
+                "Export request not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+        except ValueError as e:
+            return error_response(
+                str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )

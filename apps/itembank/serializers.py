@@ -12,7 +12,7 @@ validation only.
 import json
 
 from rest_framework import serializers
-from .models import ItemVersion, ItemComment
+from .models import ItemVersion, ItemComment, VaultExportRequest, PanelVote
 
 from .services import create_or_update_item_draft
 
@@ -186,7 +186,12 @@ class ItemCommentSerializer(serializers.ModelSerializer):
 
 
 class SuggestionDecisionSerializer(serializers.Serializer):
-    """Handles the US-4 Accept/Decline payload."""
+    """Handles the Accept/Decline payload.
+
+    This serializer validates suggestion decision payloads containing a choice
+    (accept or decline) and an optional rationale. Declined suggestions require
+    a documented rationale.
+    """
 
     DECISION_CHOICES = [("accept", "Accept"), ("decline", "Decline")]
 
@@ -213,3 +218,50 @@ class SuggestionDecisionSerializer(serializers.Serializer):
         raise NotImplementedError(
             "update() is not implemented for SuggestionDecisionSerializer"
         )
+
+
+class PanelVoteSerializer(serializers.ModelSerializer):
+    """Serializes panel votes on items during the review workflow.
+
+    Used to capture panellist decisions, including vote choice and supporting
+    justification. Timestamps are automatically managed by the model.
+    """
+
+    class Meta:
+        """Meta configuration for PanelVoteSerializer."""
+
+        model = PanelVote
+        fields = ["id", "item_id", "panellist_id", "vote", "justification", "voted_at"]
+        read_only_fields = ["id", "item_id", "panellist_id", "voted_at"]
+
+
+class VaultExportSerializer(serializers.ModelSerializer):
+    """Serializes vault export requests for archival and retrieval workflows.
+
+    Used to manage the lifecycle of data export requests, including scope,
+    purpose, and approval tracking. Timestamps and status are automatically
+    managed by the model.
+    """
+
+    class Meta:
+        """Meta configuration for VaultExportSerializer."""
+
+        model = VaultExportRequest
+        fields = [
+            "id",
+            "scope",
+            "purpose",
+            "requester_id",
+            "cosigner_id",
+            "status",
+            "expires_at",
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "requester_id",
+            "status",
+            "expires_at",
+            "created_at",
+            "cosigner_id",
+        ]

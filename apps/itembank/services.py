@@ -1,14 +1,31 @@
 ﻿"""Service functions for item draft creation, versioning, and submission."""
 
-import uuid
 import logging
+import shutil
+import subprocess
+import tempfile
+import uuid
+import io
 from datetime import timedelta
-from django.db import transaction
-from django.core.exceptions import ValidationError, ObjectDoesNotExist
+
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.core.files import File
+from django.db import transaction
 from django.utils import timezone
 
-from .models import Item, ItemTransition, ItemVersion, ItemComment
+from shared.storage import get_storage_backend
+
+from .tasks import dispatch_item_status_notification
+
+from .models import (
+    Item,
+    ItemTransition,
+    ItemVersion,
+    ItemComment,
+    PanelVote,
+    VaultExportRequest,
+)
 from apps.audit.models import AuditEvent
 from workflow.guards import has_mandatory_metadata
 
@@ -46,7 +63,7 @@ def create_or_update_item_draft(
         # Create a brand new draft item.
         item = Item.objects.create(
             author_id=author_user,
-            status="Draft",
+            status=Item.Status.DRAFT,
             **data,
         )
         version_no = 1
@@ -59,13 +76,13 @@ def create_or_update_item_draft(
             entity_type="item",
             entity_id=str(item.id),
             old_state=None,
-            new_state={"status": "Draft"},
+            new_state={"status": Item.Status.DRAFT},
         )
     else:
         # Lock the existing item before updating it.
         item = Item.objects.select_for_update().get(id=item_id, author_id=author_user)
 
-        if item.status not in ["Draft", "Revised"]:
+        if item.status not in [Item.Status.DRAFT, Item.Status.REVISED]:
             raise ValueError("You can only auto-save items in Draft or Revised states.")
 
         # Determine the next version number.
@@ -92,8 +109,8 @@ def create_or_update_item_draft(
         "difficulty": item.difficulty,
         "marks": str(item.marks) if item.marks is not None else None,
         "time": item.time,
-        "blueprint_ref": item.blueprint_ref,
         "source": item.source,
+        "blueprint_ref": item.blueprint_ref,
     }
 
     # For new items, default asset_refs to empty list if none provided.
@@ -139,7 +156,7 @@ def submit_item_for_review(item_id: str, author_auth: dict) -> Item:
     item = Item.objects.select_for_update().get(id=item_id, author_id=author_user)
 
     # Ensure only draft-like states can be submitted.
-    if item.status not in ["Draft", "Revised"]:
+    if item.status not in [Item.Status.DRAFT, Item.Status.REVISED]:
         raise ValidationError(
             f"Cannot submit an item currently in state: {item.status}"
         )
@@ -154,14 +171,14 @@ def submit_item_for_review(item_id: str, author_auth: dict) -> Item:
     old_status = item.status
 
     # Transition the item into the submitted state.
-    item.status = "Submitted"
+    item.status = Item.Status.SUBMITTED
     item.save(update_fields=["status"])
 
     # Record the workflow transition for history tracking.
     ItemTransition.objects.create(
         item_id=item,
         from_state=old_status,
-        to_state="Submitted",
+        to_state=Item.Status.SUBMITTED,
         actor_id=author_user,
         justification="Item submitted for peer review",
     )
@@ -173,15 +190,50 @@ def submit_item_for_review(item_id: str, author_auth: dict) -> Item:
         entity_type="item",
         entity_id=str(item.id),
         old_state={"status": old_status},
-        new_state={"status": "Submitted"},
+        new_state={"status": Item.Status.SUBMITTED},
     )
 
     return item
 
 
-# In production, these would be imported from shared libraries:
-# from shared.security import scan_for_viruses
-# from shared.storage import upload_to_vault_bucket
+def scan_for_viruses(blob: bytes) -> bool:
+    """Run a best-effort ClamAV scan against an uploaded blob."""
+
+    clamscan = shutil.which("clamscan")
+    if not clamscan:
+        raise RuntimeError("Virus scanner unavailable: clamscan binary was not found.")
+
+    with tempfile.NamedTemporaryFile(suffix=".upload", delete=True) as temp_file:
+        temp_file.write(blob)
+        temp_file.flush()
+        try:
+            completed = subprocess.run(
+                [clamscan, "--no-summary", temp_file.name],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired as exc:
+            logger.error("Virus scan timeout for temp file %s: %s", temp_file.name, exc)
+            # Treat scan timeout as a failed (non-clean) result to be conservative
+            return False
+
+    if completed.returncode == 0:
+        return True
+    if completed.returncode == 1:
+        return False
+
+    raise RuntimeError(
+        completed.stderr.strip() or completed.stdout.strip() or "Virus scan failed."
+    )
+
+
+def upload_to_vault_bucket(asset_ref: str, file_obj) -> str:
+    """Persist an uploaded asset to the configured storage backend."""
+
+    storage_backend = get_storage_backend()
+    return storage_backend.save(asset_ref, File(file_obj))
 
 
 def process_asset_upload(file_obj) -> str:
@@ -206,44 +258,42 @@ def process_asset_upload(file_obj) -> str:
         A unique asset reference string to be stored on the ItemVersion.
     """
 
-    # Probe the file to ensure the caller provided a readable object. Read a
-    # single byte and then rewind so later upload routines can read from the
-    # beginning. This also prevents "unused-argument" lint warnings.
+    # Probe the file to ensure the caller provided a readable object, then scan
+    # and persist the upload before returning a vault reference.
     try:
-        _ = file_obj.read(
-            1
-        )  # Read a single byte to probe readability; intentionally unused.
+        file_bytes = file_obj.read()
     except Exception as exc:
-        # Re-raise as ValueError to keep the service-level API consistent,
-        # while preserving the original exception context.
         raise ValueError(
             "Provided file_obj is not a readable file-like object"
         ) from exc
-    finally:
-        # Always attempt to rewind; safe for objects that support seek().
-        try:
-            file_obj.seek(0)
-        except (AttributeError, OSError, ValueError):
-            pass
 
-    # Virus Scan Gate (mocked for local/dev).
-    # call such as for production:
-    # is_clean = scan_for_viruses(file_obj.read())
-    is_clean = True
+    # Ensure we have a fresh, seekable stream. If the original file-like
+    # object does not support seek, recreate a BytesIO from the raw bytes.
+    try:
+        file_obj.seek(0)
+    except (AttributeError, OSError, ValueError):
+        file_obj = io.BytesIO(file_bytes)
+
+    is_clean = scan_for_viruses(file_bytes)
+
+    # Rewind or recreate the stream before upload to ensure the upload sees
+    # the full content at position 0.
+    try:
+        file_obj.seek(0)
+    except (AttributeError, OSError, ValueError):
+        file_obj = io.BytesIO(file_bytes)
 
     if not is_clean:
-        # If a scanner indicates infection, reject the upload and surface an
-        # explicit error so callers can handle quarantining and notifications.
         raise ValueError("File failed virus scan. Upload rejected and quarantined.")
 
-    # The unique ID (the asset_ref) to reference the stored blob.
     asset_ref = f"asset_{uuid.uuid4().hex}"
 
-    # production we would call upload_to_vault_bucket(asset_ref, file_obj) after
-    # rewinding the file:
-    # file_obj.seek(0)
-    # file_obj.seek(0)
-    # upload_to_vault_bucket(asset_ref, file_obj)
+    try:
+        upload_to_vault_bucket(asset_ref, file_obj)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to upload asset {asset_ref} to vault storage."
+        ) from exc
 
     return asset_ref
 
@@ -298,7 +348,7 @@ def restore_item_version(item_id: str, version_id: str, actor_auth: dict) -> Ite
     # Validation Constraints
     if item.author_id_id != resolved_user.id:
         raise ValueError("Only the assigned author can restore item versions.")
-    if item.status not in ["Draft", "Revised"]:
+    if item.status not in [Item.Status.DRAFT, Item.Status.REVISED]:
         raise ValueError(
             f"Cannot restore versions while item is in {item.status} state."
         )
@@ -330,8 +380,8 @@ def restore_item_version(item_id: str, version_id: str, actor_auth: dict) -> Ite
     item.cognitive_level = snapshot.get("cognitive_level", item.cognitive_level)
     item.difficulty = snapshot.get("difficulty", item.difficulty)
     item.time = snapshot.get("time", item.time)
-    item.blueprint_ref = snapshot.get("blueprint_ref", item.blueprint_ref)
     item.source = snapshot.get("source", item.source)
+    item.blueprint_ref = snapshot.get("blueprint_ref", item.blueprint_ref)
 
     marks_val = snapshot.get("marks")
     item.marks = float(marks_val) if marks_val else None
@@ -409,7 +459,7 @@ def process_suggestion_decision(
     # RBAC/State Validation
     if item.author_id_id != resolved_user.id:
         raise ValueError("Only the Item Writer can accept or decline suggestions.")
-    if item.status not in ["In Review", "Revised"]:
+    if item.status not in [Item.Status.IN_REVIEW, Item.Status.REVISED]:
         raise ValueError(
             f"Cannot process suggestions while item is in {item.status} state."
         )
@@ -470,13 +520,13 @@ def check_and_escalate_overdue_reviews() -> int:
             business_days += 1
 
     # Only look at items currently stuck in the review queue
-    stuck_items = Item.objects.filter(status="In Review")
+    stuck_items = Item.objects.filter(status=Item.Status.IN_REVIEW)
     escalated_count = 0
 
     for item in stuck_items:
         # Find the exact moment this item entered the 'In Review' state
         entry_transition = (
-            item.transitions.filter(to_state="In Review")
+            item.transitions.filter(to_state=Item.Status.IN_REVIEW)
             .order_by("-occurred_at")
             .first()
         )
@@ -516,3 +566,175 @@ def check_and_escalate_overdue_reviews() -> int:
                 escalated_count += 1
 
     return escalated_count
+
+
+@transaction.atomic
+def register_panel_vote(
+    item_id: str, panellist_id: str, vote_type: str, justification: str
+) -> Item:
+    """
+    Casts an item panel vote, checks word thresholds,
+    and evaluates consensus state changes automatically.
+    """
+    item = Item.objects.select_for_update().get(id=item_id)
+
+    if item.status != Item.Status.MODERATION_PANEL:
+        raise ValueError(
+            f"Item is not in the moderation phase. Current status: {item.status}"
+        )
+
+    # Enforce word limit constraint
+    word_count = len(justification.split())
+    if word_count < 30:
+        raise ValueError(
+            f"Justification narrative must be at least 30 words. Current count: {word_count}"
+        )
+
+    # Prevent duplicate panellist votes (unique_together enforced at DB level).
+    if PanelVote.objects.filter(item_id=item, panellist_id=panellist_id).exists():
+        raise ValueError("This panellist has already voted on this item.")
+
+    # Save the vote
+    PanelVote.objects.create(
+        item_id=item,
+        panellist_id=panellist_id,
+        vote=vote_type,
+        justification=justification,
+    )
+
+    # Evaluate current matching votes
+    votes = item.panel_votes.all()
+    approve_count = votes.filter(vote="Approve").count()
+    reject_count = votes.filter(vote="Reject").count()
+
+    # Consensus rules (Default 2 out of 3 match wins)
+    if approve_count >= 2:
+        # Record the SRS-defined approval step before auto-locking the item for use.
+        previous_status = item.status
+        item.status = Item.Status.APPROVED
+        item.save(update_fields=["status"])
+
+        ItemTransition.objects.create(
+            item_id=item,
+            from_state=previous_status,
+            to_state=Item.Status.APPROVED,
+            actor_id=panellist_id,
+            justification=justification,
+        )
+
+        item.status = Item.Status.LOCKED_FOR_USE
+        item.save(update_fields=["status"])
+
+        ItemTransition.objects.create(
+            item_id=item,
+            from_state=Item.Status.APPROVED,
+            to_state=Item.Status.LOCKED_FOR_USE,
+            actor_id=panellist_id,
+            justification="Item approved and automatically locked for use",
+        )
+
+        # Fire async notification only after the transaction commits.
+        transaction.on_commit(
+            lambda item_id=str(item.id), author_id=str(item.author_id_id): (
+                dispatch_item_status_notification.delay(
+                    item_id,
+                    author_id,
+                    Item.Status.LOCKED_FOR_USE,
+                )
+            )
+        )
+
+        # Log forensic snapshot to security audit
+        AuditEvent.record(
+            actor_id="SYSTEM",
+            action="ITEM_CONSENSUAL_APPROVAL",
+            entity_type="item",
+            entity_id=str(item.id),
+            new_state={
+                "status": Item.Status.LOCKED_FOR_USE,
+                "approvers": [
+                    str(v.panellist_id) for v in votes.filter(vote="Approve")
+                ],
+            },
+        )
+    elif reject_count >= 2:
+        previous_status = item.status
+        item.status = Item.Status.REJECTED
+        item.save(update_fields=["status"])
+
+        # Record workflow transition for the consensual rejection
+        ItemTransition.objects.create(
+            item_id=item,
+            from_state=previous_status,
+            to_state=Item.Status.REJECTED,
+            actor_id=panellist_id,
+            justification="Consensual panel rejection",
+        )
+
+        # Consolidate rejection rationale for the 5-minute notification trigger
+        consolidated_rationale = [v.justification for v in votes.filter(vote="Reject")]
+        transaction.on_commit(
+            lambda item_id=str(item.id), author_id=str(item.author_id_id), rationales=consolidated_rationale: (
+                dispatch_item_status_notification.delay(
+                    item_id,
+                    author_id,
+                    Item.Status.REJECTED,
+                    rationales=rationales,
+                )
+            )
+        )
+
+        AuditEvent.record(
+            actor_id="SYSTEM",
+            action="ITEM_CONSENSUAL_REJECTION",
+            entity_type="item",
+            entity_id=str(item.id),
+            new_state={"status": Item.Status.REJECTED},
+        )
+
+    return item
+
+
+@transaction.atomic
+def execute_vault_cosign(request_id: str, cosigner_id: str) -> VaultExportRequest:
+    """
+    Co-signs and executes an export request with strict anti-circumvention validations.
+    """
+    User = get_user_model()
+    try:
+        cosigner_user = User.objects.get(keycloak_sub=cosigner_id)
+    except ObjectDoesNotExist as exc:
+        raise ValueError("Cosigner user not found for provided auth sub.") from exc
+
+    req = VaultExportRequest.objects.select_for_update().get(id=request_id)
+
+    if req.status != "Pending":
+        raise ValueError(
+            f"This export request is no longer active. Status: {req.status}"
+        )
+    if timezone.now() > req.expires_at:
+        req.status = "Expired"
+        req.save()
+        raise ValueError("The 72-hour validation window for this request has expired.")
+
+    # Prevent self-signing anti-circumvention rule
+    if req.requester_id_id == cosigner_user.id:
+        raise ValueError(
+            "Security Boundary Exception: Initiating officer cannot act as the co-signing authoriser."
+        )
+
+    # Execute request
+    req.cosigner_id = cosigner_user
+    req.status = "Executed"
+    req.save()
+
+    # Record the actual physical vault access log line
+    AuditEvent.record(
+        actor_id=str(cosigner_id),
+        action="VAULT_CONTENT_EXPORTED",
+        entity_type="vault",
+        entity_id=str(req.id),
+        new_state={"scope_length": len(req.scope)},
+    )
+
+    return req
