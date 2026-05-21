@@ -82,6 +82,18 @@ CRITICAL_PAPER_FIELDS: frozenset[str] = frozenset({
     "normalisation_params",
 })
 
+# Non-critical sitting fields the Chair may amend post-lock. Anything outside
+# this set + CRITICAL_SITTING_FIELDS is rejected as unknown by the amendment
+# entry points — without that guard a typo in ``changes`` would silently set
+# an unrelated attribute on the model instance.
+NON_CRITICAL_SITTING_FIELDS: frozenset[str] = frozenset({
+    "centres",
+})
+
+ALL_AMENDABLE_SITTING_FIELDS: frozenset[str] = (
+    CRITICAL_SITTING_FIELDS | NON_CRITICAL_SITTING_FIELDS
+)
+
 
 class SittingValidationError(ValueError):
     """Raised for validation failures with a list of human-readable reasons.
@@ -193,6 +205,14 @@ def _validate_sitting_complete(sitting: Sitting) -> None:
             f"§71 requires exactly {REQUIRED_SUBJECT_PAPER_COUNT} subject papers; "
             f"found {len(papers)}."
         )
+
+    # Sitting-level default pass_mark must also fall within the policy band.
+    # Without this check, a Secretariat could narrow the band post-hoc to
+    # exclude an already-saved sitting-level pass mark and still configure.
+    try:
+        _validate_pass_band(sitting, _to_decimal(sitting.pass_mark))
+    except SittingValidationError as exc:
+        reasons.append(f"Sitting default pass_mark: {exc.message}")
 
     for paper in papers:
         try:
@@ -577,6 +597,26 @@ def _classify_changes(
     return critical, non_critical
 
 
+def _reject_unknown_amendment_fields(changes: dict) -> None:
+    """Refuse amendment payloads that reference fields outside the allow-list.
+
+    Without this guard, ``setattr(sitting, key, value)`` would silently set an
+    arbitrary attribute on the model instance (Django doesn't enforce model
+    field membership on assignment), and the subsequent snapshot read would
+    raise an uncaught ``AttributeError`` — surfacing as a 500 instead of a
+    clean 400 with a clear reason.
+    """
+    unknown = [k for k in changes if k not in ALL_AMENDABLE_SITTING_FIELDS]
+    if unknown:
+        raise SittingValidationError(
+            "UNKNOWN_FIELD",
+            f"Unknown or non-amendable field(s): {', '.join(sorted(unknown))}.",
+            details=[
+                f"Permitted: {', '.join(sorted(ALL_AMENDABLE_SITTING_FIELDS))}.",
+            ],
+        )
+
+
 @transaction.atomic
 def amend_non_critical(
     actor_id,
@@ -602,6 +642,8 @@ def amend_non_critical(
             "MISSING_JUSTIFICATION",
             "Post-lock amendments require a justification of at least 10 characters.",
         )
+
+    _reject_unknown_amendment_fields(changes)
 
     critical, non_critical = _classify_changes(changes, CRITICAL_SITTING_FIELDS)
     if critical:
@@ -672,6 +714,8 @@ def amend_critical_with_resolution(
             "MISSING_JUSTIFICATION",
             "Critical amendments require a justification of at least 30 characters.",
         )
+
+    _reject_unknown_amendment_fields(changes)
 
     affected = list(changes.keys())
     before = {k: _snapshot_value(getattr(sitting, k)) for k in affected}
@@ -817,6 +861,17 @@ def get_sitting_snapshot(sitting_ref: str) -> dict:
     return _build_live_snapshot(sitting)
 
 
+def _decimal_str(value) -> str | None:
+    """Render a Decimal as a string, preserving JSON ``null`` for missing values.
+
+    ``str(None)`` returns the literal ``"None"`` — a footgun the moment any of
+    the snapshot's Decimal fields becomes nullable (or arrives null via a
+    partial select). Routing every Decimal serialisation through this helper
+    keeps the snapshot's JSON contract honest.
+    """
+    return None if value is None else str(value)
+
+
 def _build_live_snapshot(sitting: Sitting) -> dict:
     """Compute a JSON-serialisable snapshot of ``sitting`` from live fields."""
     return {
@@ -825,20 +880,14 @@ def _build_live_snapshot(sitting: Sitting) -> dict:
         "sitting_date": sitting.sitting_date.isoformat(),
         "sitting_end_date": sitting.sitting_end_date.isoformat(),
         "pass_rule": sitting.pass_rule,
-        "pass_mark": str(sitting.pass_mark),
+        "pass_mark": _decimal_str(sitting.pass_mark),
         "pass_band": {
-            "min": str(sitting.pass_band_min),
-            "max": str(sitting.pass_band_max),
+            "min": _decimal_str(sitting.pass_band_min),
+            "max": _decimal_str(sitting.pass_band_max),
         },
         "compensation": {
-            "min_per_paper": (
-                str(sitting.compensated_min_per_paper)
-                if sitting.compensated_min_per_paper is not None else None
-            ),
-            "aggregate_floor": (
-                str(sitting.compensated_aggregate_floor)
-                if sitting.compensated_aggregate_floor is not None else None
-            ),
+            "min_per_paper": _decimal_str(sitting.compensated_min_per_paper),
+            "aggregate_floor": _decimal_str(sitting.compensated_aggregate_floor),
         },
         "normalisation_method": sitting.normalisation_method,
         "centres": list(sitting.centres or []),
@@ -855,7 +904,7 @@ def _build_live_snapshot(sitting: Sitting) -> dict:
                 "subject_name": paper.subject_name,
                 "mode": paper.mode,
                 "total_marks": paper.total_marks,
-                "pass_mark": str(paper.pass_mark),
+                "pass_mark": _decimal_str(paper.pass_mark),
                 "duration_minutes": paper.duration_minutes,
                 "sections": list(paper.sections or []),
                 "normalisation_method": paper.normalisation_method,

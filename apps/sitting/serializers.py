@@ -215,6 +215,19 @@ class VariantGenerateSerializer(serializers.Serializer):
         help_text="Optional explicit seeds (length must equal count).",
     )
 
+    def validate(self, attrs):
+        # Enforce the contract at the API boundary so the caller gets a
+        # 400 with a clear field-level error instead of a service-layer
+        # ValueError bubbling up as a 400 with a generic message.
+        seeds = attrs.get("seeds")
+        if seeds is not None and len(seeds) != attrs["count"]:
+            raise serializers.ValidationError(
+                {"seeds": (
+                    f"Length must equal count ({attrs['count']}); got {len(seeds)}."
+                )}
+            )
+        return attrs
+
 
 # ── Lock events ────────────────────────────────────────────────────────────
 
