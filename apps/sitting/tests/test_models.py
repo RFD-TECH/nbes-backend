@@ -4,6 +4,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
+from django.db import IntegrityError, transaction
 
 from apps.sitting.models import (
     BlueprintVersion,
@@ -51,16 +52,21 @@ def test_subject_paper_unique_per_sitting(sitting):
     SubjectPaper.objects.create(
         sitting=sitting, subject_code="CIV", subject_name="Civil Procedure",
     )
-    with pytest.raises(Exception):  # IntegrityError, but unique_together varies by DB
-        SubjectPaper.objects.create(
-            sitting=sitting, subject_code="CIV", subject_name="dup",
-        )
+    # ``unique_together`` raises IntegrityError on both PostgreSQL and SQLite.
+    # Wrap the failing insert in its own atomic block so the broken transaction
+    # state doesn't poison the rest of the test.
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            SubjectPaper.objects.create(
+                sitting=sitting, subject_code="CIV", subject_name="dup",
+            )
 
 
 def test_blueprint_version_unique_per_subject(db):
     BlueprintVersion.objects.create(subject_code="CIV", version_no=1)
-    with pytest.raises(Exception):
-        BlueprintVersion.objects.create(subject_code="CIV", version_no=1)
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            BlueprintVersion.objects.create(subject_code="CIV", version_no=1)
 
 
 def test_variant_unique_per_paper(sitting):
@@ -68,8 +74,9 @@ def test_variant_unique_per_paper(sitting):
         sitting=sitting, subject_code="CIV", subject_name="Civil",
     )
     Variant.objects.create(paper=paper, variant_no=1, seed=123)
-    with pytest.raises(Exception):
-        Variant.objects.create(paper=paper, variant_no=1, seed=999)
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            Variant.objects.create(paper=paper, variant_no=1, seed=999)
 
 
 def test_lock_event_kinds(sitting):

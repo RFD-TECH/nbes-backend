@@ -362,9 +362,15 @@ class SittingLockView(APIView):
             return _err("NOT_FOUND", "Sitting not found.", status.HTTP_404_NOT_FOUND)
         justification = request.data.get("justification", "")
         try:
+            # A manual lock IS the lock event (not an amendment), so the
+            # SittingLockEvent must use the snapshot-bearing AUTO_LOCK kind —
+            # otherwise get_sitting_snapshot would fall back to live state
+            # and the manual-lock path would lose immutability. The "manual
+            # override" provenance lives on SittingLock.override and the
+            # audit trail, not on the event kind.
             sitting = services.lock_sitting(
                 _actor(request), sitting,
-                kind=SittingLockEvent.Kind.CHAIR_AMEND,
+                kind=SittingLockEvent.Kind.AUTO_LOCK,
                 justification=justification or "Manual lock by authorised override.",
                 override=True,
                 request_id=_rid(request), ip_address=_ip(request),

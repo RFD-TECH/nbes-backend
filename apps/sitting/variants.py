@@ -297,6 +297,16 @@ def regenerate_variant_for_audit(variant: Variant) -> list[str]:
     Used by Auditors to verify that a stored ``items`` list matches what the
     generator would produce today. Returns the list of item ids — comparing
     against ``variant.items`` confirms reproducibility.
+
+    **Caveat — pool drift.** This recomputes the ordering against the *current*
+    item pool, not the pool that existed at generation time. If items have
+    been added to the bank, retired, or had their status changed since the
+    variant was generated, the replay will diverge from ``variant.items``
+    even though the original generation was deterministically correct.
+    A mismatch therefore indicates *either* tampering *or* pool drift —
+    auditors should cross-check ``Item.created_at`` / ``Item.status``
+    against ``variant.generated_at`` before treating a mismatch as evidence
+    of tampering.
     """
     item_pool_fn = _resolve_item_pool_fn()
     pool = list(item_pool_fn(variant.paper))

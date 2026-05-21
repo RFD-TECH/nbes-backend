@@ -32,6 +32,7 @@ import logging
 from datetime import date, timedelta
 
 from celery import shared_task
+from django.db import transaction
 from django.utils import timezone
 
 from apps.audit.models import AuditEvent
@@ -146,17 +147,18 @@ def send_t30_reminders(self) -> dict:
 
     for offset in REMINDER_OFFSETS_DAYS:
         target_date = today + timedelta(days=offset)
-        candidates = (
+        candidate_refs = list(
             Sitting.objects
             .filter(sitting_date=target_date)
             .exclude(status__in=[Sitting.Status.CLOSED])
+            .values_list("ref", flat=True)
         )
-        for sitting in candidates:
-            if _already_sent(sitting, offset, today):
-                skipped.append({"ref": sitting.ref, "offset": offset, "reason": "already_sent"})
-                continue
-            _record_reminder(sitting, offset, today)
-            sent.append({"ref": sitting.ref, "offset": offset})
+        for ref in candidate_refs:
+            outcome = _send_reminder_atomic(ref, offset, today)
+            if outcome == "sent":
+                sent.append({"ref": ref, "offset": offset})
+            else:
+                skipped.append({"ref": ref, "offset": offset, "reason": outcome})
 
     return {
         "ran_at": timezone.now().isoformat(),
@@ -166,23 +168,30 @@ def send_t30_reminders(self) -> dict:
     }
 
 
-def _already_sent(sitting: Sitting, offset: int, on_date: date) -> bool:
-    """Have we already emitted a reminder at this offset for this sitting today?
+@transaction.atomic
+def _send_reminder_atomic(sitting_ref: str, offset: int, on_date: date) -> str:
+    """Run the dedup check, audit-mark, and outbox publish as a single unit.
 
-    Uses JSONField key lookups so the dedup works on both PostgreSQL
-    (production) and SQLite (test DB) — ``__contains`` is only supported
-    on Postgres.
+    Holds a row-level lock on the Sitting for the duration so two concurrent
+    workers cannot both pass the dedup check. The outbox row is written in
+    the same DB transaction as the audit marker via ``shared.events.publish``,
+    so we cannot end up with the marker recorded but the event undelivered
+    (or vice versa). Returns one of ``"sent"``, ``"already_sent"``,
+    ``"vanished"`` for the caller to bucket.
     """
-    return AuditEvent.objects.filter(
-        entity_type="sitting",
-        entity_id=sitting.ref,
-        action=ev.T30_REMINDER_SENT,
-        new_state__offset_days=offset,
-        new_state__date=on_date.isoformat(),
-    ).exists()
+    sitting = (
+        Sitting.objects
+        .select_for_update()
+        .filter(pk=sitting_ref)
+        .first()
+    )
+    if sitting is None:
+        return "vanished"
+    if sitting.status == Sitting.Status.CLOSED:
+        return "closed"
+    if _already_sent(sitting, offset, on_date):
+        return "already_sent"
 
-
-def _record_reminder(sitting: Sitting, offset: int, on_date: date) -> None:
     AuditEvent.record(
         actor_id=None,
         action=ev.T30_REMINDER_SENT,
@@ -203,3 +212,20 @@ def _record_reminder(sitting: Sitting, offset: int, on_date: date) -> None:
             "fires_on": on_date.isoformat(),
         },
     )
+    return "sent"
+
+
+def _already_sent(sitting: Sitting, offset: int, on_date: date) -> bool:
+    """Have we already emitted a reminder at this offset for this sitting today?
+
+    Uses JSONField key lookups so the dedup works on both PostgreSQL
+    (production) and SQLite (test DB) — ``__contains`` is only supported
+    on Postgres.
+    """
+    return AuditEvent.objects.filter(
+        entity_type="sitting",
+        entity_id=sitting.ref,
+        action=ev.T30_REMINDER_SENT,
+        new_state__offset_days=offset,
+        new_state__date=on_date.isoformat(),
+    ).exists()
