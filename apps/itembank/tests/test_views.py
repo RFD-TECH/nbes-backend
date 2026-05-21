@@ -16,10 +16,11 @@ from rest_framework.request import Request
 from rest_framework.test import APIRequestFactory
 
 from apps.audit.models import AuditEvent
-from apps.itembank.models import Item, SavedSearch
+from apps.itembank.models import Item, ItemUsage, SavedSearch
 from apps.itembank.views import (
     ItemSearchViewSet,
     SavedSearchViewSet,
+    _item_search_queryset,
     _rbac_scoped_item_queryset,
 )
 from .test_services import _make_item, _make_user
@@ -168,3 +169,15 @@ class SearchAuditTrailTests(TestCase):
         self.assertTrue(
             AuditEvent.objects.filter(action="SEARCH_EXPORTED").exists()
         )
+
+
+class ItemSearchQuerysetTests(TestCase):
+    def test_usage_count_sums_recorded_occurrences(self):
+        author = _make_user()
+        item = _make_item(author=author)
+        ItemUsage.objects.create(item_id=item, sitting_ref="BAR-2026-01", count=3)
+        ItemUsage.objects.create(item_id=item, sitting_ref="BAR-2026-02", count=2)
+
+        result = _item_search_queryset(Item.objects.filter(pk=item.pk)).get()
+
+        self.assertEqual(result.usage_count, 5)

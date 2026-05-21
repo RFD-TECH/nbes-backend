@@ -4,7 +4,8 @@ from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.http import HttpResponse
-from django.db.models import Count, OuterRef, Subquery
+from django.db.models import IntegerField, OuterRef, Subquery, Sum, Value
+from django.db.models.functions import Coalesce
 from rest_framework import viewsets, status, filters as drf_filters
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser
@@ -88,7 +89,9 @@ def _item_search_queryset(base_qs):
         item_id=OuterRef("pk"), id=OuterRef("current_version_id")
     )
     return base_qs.annotate(
-        usage_count=Count("usage_history", distinct=True),
+        usage_count=Coalesce(
+            Sum("usage_history__count"), Value(0), output_field=IntegerField()
+        ),
         latest_facility_index=Subquery(latest_usage.values("facility_index")[:1]),
         latest_discrimination_index=Subquery(
             latest_usage.values("discrimination_index")[:1]
