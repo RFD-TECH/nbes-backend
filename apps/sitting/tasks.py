@@ -167,12 +167,18 @@ def send_t30_reminders(self) -> dict:
 
 
 def _already_sent(sitting: Sitting, offset: int, on_date: date) -> bool:
-    """Have we already emitted a reminder at this offset for this sitting today?"""
+    """Have we already emitted a reminder at this offset for this sitting today?
+
+    Uses JSONField key lookups so the dedup works on both PostgreSQL
+    (production) and SQLite (test DB) — ``__contains`` is only supported
+    on Postgres.
+    """
     return AuditEvent.objects.filter(
         entity_type="sitting",
         entity_id=sitting.ref,
         action=ev.T30_REMINDER_SENT,
-        new_state__contains={"offset_days": offset, "date": on_date.isoformat()},
+        new_state__offset_days=offset,
+        new_state__date=on_date.isoformat(),
     ).exists()
 
 

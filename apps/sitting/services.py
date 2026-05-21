@@ -297,22 +297,27 @@ def add_or_update_paper(
     pass_mark = _to_decimal(data.get("pass_mark"))
     _validate_pass_band(sitting, pass_mark)
 
-    paper, created = SubjectPaper.objects.get_or_create(
-        sitting=sitting, subject_code=subject_code,
-        defaults={"subject_name": data.get("subject_name", subject_code)},
-    )
+    # Lock the parent Sitting row so two concurrent paper-upserts cannot both
+    # win the capacity race below. Cheap (row-level), safe (released at the
+    # end of the surrounding ``@transaction.atomic``).
+    Sitting.objects.select_for_update().filter(pk=sitting.pk).first()
 
-    # Capacity check on create — but allow update beyond 5 to be rejected at
-    # configure time, since a Secretariat may legitimately be editing one
-    # of the five before deleting another.
-    if created:
-        if sitting.subject_papers.count() > REQUIRED_SUBJECT_PAPER_COUNT:
-            paper.delete()
+    # Pre-check before create — only avoids the dangling-row case on the
+    # capacity boundary. Updates of an existing paper are always allowed.
+    if not SubjectPaper.objects.filter(
+        sitting=sitting, subject_code=subject_code,
+    ).exists():
+        if sitting.subject_papers.count() >= REQUIRED_SUBJECT_PAPER_COUNT:
             raise SittingValidationError(
                 "SUBJECT_COUNT_MISMATCH",
                 f"§71 requires exactly {REQUIRED_SUBJECT_PAPER_COUNT} subject papers; "
                 f"would exceed limit by adding {subject_code}.",
             )
+
+    paper, created = SubjectPaper.objects.get_or_create(
+        sitting=sitting, subject_code=subject_code,
+        defaults={"subject_name": data.get("subject_name", subject_code)},
+    )
 
     old_state = None if created else {
         k: _snapshot_value(getattr(paper, k))
@@ -483,11 +488,16 @@ def lock_sitting(
     sitting.locked_at = timezone.now()
     sitting.save(update_fields=["status", "locked_at", "updated_at"])
 
+    # Capture the locked-state snapshot — downstream consumers read from this,
+    # not from the live row, so non-critical Chair amendments cannot change
+    # what Phases 5/6/9/10 see (SRS §4.4 acceptance: snapshot stability).
+    snapshot = _build_live_snapshot(sitting)
     SittingLockEvent.objects.create(
         sitting=sitting,
         kind=kind,
         actor_id=actor_id,
         justification=justification or ("Automatic T-30 lock" if kind == SittingLockEvent.Kind.AUTO_LOCK else ""),
+        after_snapshot=snapshot,
     )
 
     # Convenience pointer row — one per sitting, marks the T-30 lock event.
@@ -676,6 +686,10 @@ def amend_critical_with_resolution(
     sitting.save()
     after = {k: _snapshot_value(getattr(sitting, k)) for k in affected}
 
+    # A resolution-backed critical amendment is the only post-lock path that
+    # legitimately changes downstream truth. Re-snapshot the whole sitting
+    # (not just the diff) so get_sitting_snapshot returns the new state.
+    full_snapshot = _build_live_snapshot(sitting)
     event = SittingLockEvent.objects.create(
         sitting=sitting,
         kind=SittingLockEvent.Kind.RESOLUTION_AMEND,
@@ -684,7 +698,7 @@ def amend_critical_with_resolution(
         resolution_ref=resolution_ref,
         affected_fields=affected,
         before_snapshot=before,
-        after_snapshot=after,
+        after_snapshot={"changes": after, "snapshot": full_snapshot},
     )
     _audit(
         actor_id, ev.SITTING_AMENDED_RESOLUTION, "sitting", sitting.ref,
@@ -751,20 +765,60 @@ def publish_blueprint_version(
 # ── Read-only snapshot ────────────────────────────────────────────────────-
 
 
-def get_sitting_snapshot(sitting_ref: str) -> dict:
-    """Return a frozen, JSON-serialisable view of a Sitting and its papers.
+_SNAPSHOT_KINDS = (
+    SittingLockEvent.Kind.AUTO_LOCK,
+    SittingLockEvent.Kind.RESOLUTION_AMEND,
+)
 
-    Downstream phases (5, 6, 9, 10) consume this snapshot rather than reading
-    the live Sitting record directly. Non-critical post-lock amendments do
-    update the underlying fields, but the snapshot remains identical for
-    fields that were not amended — callers wanting the *original* locked
-    snapshot should read the first AUTO_LOCK SittingLockEvent.
+
+def get_sitting_snapshot(sitting_ref: str) -> dict:
+    """Return the frozen snapshot of a Sitting and its papers.
+
+    Behaviour (SRS §4.4 acceptance — snapshot stability):
+
+    * **Pre-lock** (DRAFT / CONFIGURED) — returns the live record (snapshots
+      do not yet exist).
+    * **Post-lock** — returns the snapshot persisted on the most recent
+      AUTO_LOCK or RESOLUTION_AMEND ``SittingLockEvent``. Non-critical
+      Chair amendments (``CHAIR_AMEND``) do NOT change the snapshot, so
+      downstream phases (5, 6, 9, 10) see a stable record regardless of
+      contact-detail / venue-note updates between lock and sitting day.
+
+    Critical-field amendments via NBEC resolution legitimately rebuild the
+    snapshot — the next call after a RESOLUTION_AMEND reflects the new state.
     """
-    sitting = (
-        Sitting.objects
-        .prefetch_related("subject_papers__blueprint_version")
-        .get(pk=sitting_ref)
-    )
+    try:
+        sitting = (
+            Sitting.objects
+            .prefetch_related("subject_papers__blueprint_version", "lock_events")
+            .get(pk=sitting_ref)
+        )
+    except Sitting.DoesNotExist:
+        raise
+
+    if not sitting.is_locked:
+        return _build_live_snapshot(sitting)
+
+    # Find the most recent snapshot-bearing event. lock_events is ordered
+    # descending by ``occurred_at`` by Meta, so the first match wins.
+    for event in sitting.lock_events.all():
+        if event.kind not in _SNAPSHOT_KINDS:
+            continue
+        snapshot = event.after_snapshot or {}
+        # RESOLUTION_AMEND stores {"changes": ..., "snapshot": ...}; AUTO_LOCK
+        # stores the snapshot directly.
+        if event.kind == SittingLockEvent.Kind.RESOLUTION_AMEND:
+            snapshot = snapshot.get("snapshot") or {}
+        if snapshot:
+            return snapshot
+
+    # Defensive fallback — a locked sitting with no snapshot-bearing event
+    # shouldn't happen, but rather than 500 we fall back to live state.
+    return _build_live_snapshot(sitting)
+
+
+def _build_live_snapshot(sitting: Sitting) -> dict:
+    """Compute a JSON-serialisable snapshot of ``sitting`` from live fields."""
     return {
         "ref": sitting.ref,
         "status": sitting.status,
@@ -787,7 +841,7 @@ def get_sitting_snapshot(sitting_ref: str) -> dict:
             ),
         },
         "normalisation_method": sitting.normalisation_method,
-        "centres": sitting.centres,
+        "centres": list(sitting.centres or []),
         "locked_at": sitting.locked_at.isoformat() if sitting.locked_at else None,
         "approved_at": sitting.approved_at.isoformat() if sitting.approved_at else None,
         "approved_via_meeting_id": (
@@ -803,9 +857,9 @@ def get_sitting_snapshot(sitting_ref: str) -> dict:
                 "total_marks": paper.total_marks,
                 "pass_mark": str(paper.pass_mark),
                 "duration_minutes": paper.duration_minutes,
-                "sections": paper.sections,
+                "sections": list(paper.sections or []),
                 "normalisation_method": paper.normalisation_method,
-                "normalisation_params": paper.normalisation_params,
+                "normalisation_params": dict(paper.normalisation_params or {}),
                 "blueprint_version_id": (
                     str(paper.blueprint_version_id)
                     if paper.blueprint_version_id else None

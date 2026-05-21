@@ -307,6 +307,42 @@ def test_snapshot_shape(draft_sitting, blueprint_versions):
     assert {p["subject_code"] for p in snap["papers"]} == set(SUBJECTS)
 
 
+def test_snapshot_is_stable_across_chair_amendments(draft_sitting, blueprint_versions):
+    """SRS §4.4 acceptance — snapshot is identical regardless of non-critical
+    Chair amendments applied between lock and the consumer's call."""
+    s = _approved_and_locked(draft_sitting, blueprint_versions)
+    before = services.get_sitting_snapshot(s.ref)
+
+    services.amend_non_critical(
+        CHAIR, s,
+        changes={"centres": ["GSL-ACCRA", "GSL-KUMASI"]},
+        justification="Late centre allocation update.",
+    )
+
+    after = services.get_sitting_snapshot(s.ref)
+    # The live row changed; the snapshot must not.
+    assert after == before
+    s.refresh_from_db()
+    assert s.centres == ["GSL-ACCRA", "GSL-KUMASI"]
+
+
+def test_snapshot_rebuilds_after_resolution_amendment(draft_sitting, blueprint_versions):
+    """A resolution-backed critical amendment legitimately rebuilds the snapshot."""
+    s = _approved_and_locked(draft_sitting, blueprint_versions)
+    before = services.get_sitting_snapshot(s.ref)
+
+    services.amend_critical_with_resolution(
+        CHAIR, s,
+        changes={"pass_mark": Decimal("55.00")},
+        resolution_ref="MIN-2027-007",
+        justification="Board resolution to lift the default pass mark by five points.",
+    )
+
+    after = services.get_sitting_snapshot(s.ref)
+    assert after != before
+    assert after["pass_mark"] == "55.00"
+
+
 # ── Blueprint versioning ──────────────────────────────────────────────────-
 
 

@@ -8,11 +8,9 @@ Variants are produced per :class:`apps.sitting.models.SubjectPaper`:
   Phase 3 ``Item`` rows in status ``LOCKED_FOR_USE`` for the paper's
   ``blueprint_version.subject_code`` and not used in the last
   ``cool_down_sittings`` sittings.
-* Each generated variant is run through the **blueprint coverage validator**.
-  When Phase 3 ships ``validate_blueprint_coverage`` (in either
-  ``apps.itembank.services`` or ``shared.blueprint``) we'll resolve it via
-  :func:`_resolve_validator`; until then we fall back to a permissive stub
-  that returns PASSED with a marker so the Phase 4 demo can run end-to-end.
+* Each generated variant is run through ``validate_blueprint_coverage``
+  (see :mod:`apps.sitting.blueprint`). The validator never raises — it
+  returns a structured report; this module decides what to do with it.
 
 CBT papers do not store discrete variants — per-candidate question order and
 MCQ option order are computed at delivery time using the candidate's
@@ -23,7 +21,6 @@ from __future__ import annotations
 
 import hashlib
 import random
-import secrets
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -33,63 +30,28 @@ from apps.audit.models import AuditEvent
 from shared.events import publish
 
 from . import events as ev
+from .blueprint import CoverageReport, validate_blueprint_coverage
 from .models import SubjectPaper, Variant
 
 
 # ── Validator resolution ──────────────────────────────────────────────────-
 
 
-@dataclass
-class CoverageReport:
-    """Shape returned by the (eventual) Phase 3 blueprint coverage validator.
-
-    Phase 4 only consumes this — the canonical implementation should live
-    next to paper construction in ``apps.itembank.services``. Mirrors the
-    contract negotiated in the Phase 3 hand-off.
-    """
-
-    valid: bool
-    total_marks_actual: int = 0
-    total_marks_expected: int = 0
-    topic_coverage: dict[str, dict[str, Any]] = field(default_factory=dict)
-    cognitive_level_distribution: dict[str, dict[str, Any]] = field(default_factory=dict)
-    difficulty_distribution: dict[str, dict[str, Any]] = field(default_factory=dict)
-    section_structure: list[dict[str, Any]] = field(default_factory=list)
-    violations: list[str] = field(default_factory=list)
-    used_stub: bool = False
-
-    def as_json(self) -> dict[str, Any]:
-        return {
-            "valid": self.valid,
-            "total_marks_actual": self.total_marks_actual,
-            "total_marks_expected": self.total_marks_expected,
-            "topic_coverage": self.topic_coverage,
-            "cognitive_level_distribution": self.cognitive_level_distribution,
-            "difficulty_distribution": self.difficulty_distribution,
-            "section_structure": self.section_structure,
-            "violations": self.violations,
-            "used_stub": self.used_stub,
-        }
-
-
 ValidatorFn = Callable[..., CoverageReport]
 
 
 def _resolve_validator() -> ValidatorFn:
-    """Try to import the real Phase 3 validator; fall back to the stub.
+    """Phase 4 owns the BlueprintVersion-aware validator (``apps.sitting.blueprint``).
 
-    The Phase 3 hand-off agreed on this contract::
-
-        validate_blueprint_coverage(items, blueprint, tolerance=0.05) -> Report
-
-    We probe a small set of plausible locations so we don't break when Phase 3
-    lands the function. The stub never fails — Phase 4 demos run, and any
-    real validation kicks in the moment Phase 3 merges its implementation.
+    Phase 3 NBES-14 shipped its own private ``_validate_blueprint`` that
+    reads ``settings.NBES_BLUEPRINTS``; its acknowledged-stub catalogue is
+    not what Phase 4 needs. If Phase 3 (or ``shared/``) later exposes a
+    public ``validate_blueprint_coverage`` that accepts a BlueprintVersion,
+    we'll pick it up here automatically — until then we use our own.
     """
     candidates = (
-        ("apps.itembank.services", "validate_blueprint_coverage"),
         ("shared.blueprint", "validate_blueprint_coverage"),
-        ("workflow.guards", "validate_blueprint_coverage"),
+        ("apps.itembank.blueprint", "validate_blueprint_coverage"),
     )
     for module_path, attr in candidates:
         try:
@@ -99,22 +61,7 @@ def _resolve_validator() -> ValidatorFn:
                 return fn
         except ImportError:
             continue
-    return _stub_validator
-
-
-def _stub_validator(items, blueprint, tolerance=0.05, **_) -> CoverageReport:
-    """Permissive stub — returns PASSED with a ``used_stub`` marker.
-
-    Replace with the Phase 3 implementation. Until then this lets Phase 4
-    integrate, build variants, and exercise the audit / outbox plumbing
-    without blocking on Phase 3.
-    """
-    return CoverageReport(
-        valid=True,
-        total_marks_actual=sum(getattr(i, "marks", 0) or 0 for i in items),
-        total_marks_expected=getattr(blueprint, "total_marks", 0) or 0,
-        used_stub=True,
-    )
+    return validate_blueprint_coverage
 
 
 # ── Candidate pool resolution ─────────────────────────────────────────────-
