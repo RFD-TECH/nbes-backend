@@ -349,7 +349,7 @@ class SittingLock(models.Model):
         Sitting, on_delete=models.CASCADE, related_name="lock_record",
     )
     locked_at = models.DateTimeField(auto_now_add=True)
-    locked_by = models.CharField(max_length=20, default="system")
+    locked_by = models.CharField(max_length=64, default="system")
     override = models.BooleanField(default=False)
     override_reason = models.TextField(blank=True)
 
