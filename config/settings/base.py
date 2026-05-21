@@ -312,6 +312,6 @@ NLEMS_URL = os.environ.get("NLEMS_URL", "")
 NLEMS_API_KEY = os.environ.get("NLEMS_API_KEY", "")
 # System 14 Integration Settings
 SYSTEM_14_BASE_URL = os.environ.get("SYSTEM_14_BASE_URL", "http://system14-svc.internal:8080")
-SYSTEM_14_SERVICE_TOKEN = os.environ.get("SYSTEM_14_SERVICE_TOKEN")
-if not SYSTEM_14_SERVICE_TOKEN:
-    raise RuntimeError("SYSTEM_14_SERVICE_TOKEN is required and must be set in the environment.")
+# Validated at the task call site (apps/itembank/tasks.py) rather than at
+# settings-import time so collectstatic/migrate/tests don't require it.
+SYSTEM_14_SERVICE_TOKEN = os.environ.get("SYSTEM_14_SERVICE_TOKEN", "")

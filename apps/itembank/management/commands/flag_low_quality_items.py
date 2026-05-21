@@ -2,9 +2,8 @@
 
 Implements NBE-F02-09: any item whose last two recorded
 ``ItemUsage`` rows both have a ``discrimination_index`` below the
-configured threshold is flagged for moderator review. The threshold
-defaults to ``0.25`` and can be overridden via the
-``DISCRIMINATION_THRESHOLD`` Django setting.
+configured threshold is flagged for moderator review. The threshold is
+configured via the ``DISCRIMINATION_THRESHOLD`` Django setting.
 
 Run periodically (Celery Beat or cron):
 
@@ -63,8 +62,12 @@ class Command(BaseCommand):
             ):
                 if not item.quality_flagged:
                     with transaction.atomic():
-                        item.quality_flagged = True
-                        item.save(update_fields=["quality_flagged"])
+                        updated = Item.objects.filter(
+                            pk=item.pk,
+                            quality_flagged=False,
+                        ).update(quality_flagged=True)
+                        if not updated:
+                            continue
                         AuditEvent.record(
                             actor_id=None,
                             action="ITEM_QUALITY_FLAGGED",

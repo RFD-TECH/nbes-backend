@@ -18,7 +18,10 @@ class AuditEvent(models.Model):
     actor_id = models.UUIDField(null=True, blank=True)   # Keycloak sub; NULL for system events
     action = models.CharField(max_length=100)             # e.g. ITEM_APPROVED, VAULT_READ
     entity_type = models.CharField(max_length=100, blank=True, default="")
-    entity_id = models.UUIDField(null=True, blank=True)
+    # Accepts any entity primary key — UUID (most apps), short-string PK
+    # (Sitting.ref BAR-YYYY-MM, candidate index BAR-YYYY-CCCCC), or null
+    # for system-wide events. UUIDs continue to serialize losslessly via str().
+    entity_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
     old_state = models.JSONField(null=True, blank=True)
     new_state = models.JSONField(null=True, blank=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True)

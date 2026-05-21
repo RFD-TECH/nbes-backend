@@ -1226,9 +1226,12 @@ def generate_paper_rule_based(data: dict, user, request=None) -> Paper:
     )
 
     all_items = list(primary)
+    pool_by_id = {str(item.id): item for item in pool}
     for variant in variant_payloads:
         for item_id in variant["item_ids"]:
-            all_items.append(next(i for i in pool if str(i.id) == item_id))
+            item = pool_by_id.get(item_id)
+            if item is not None:
+                all_items.append(item)
 
     for item in all_items:
         ItemUsage.objects.create(item_id=item, sitting_ref=sitting_ref, count=1)
