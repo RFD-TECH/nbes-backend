@@ -39,6 +39,19 @@ class Item(models.Model):
         ("practical", _("Practical")),
         ("multiple_response", _("Multiple Response")),
     ]
+
+    # SRS Phase 3 workflow states for NBE-F02-04 / NBE-F02-06.
+    class Status(models.TextChoices):
+        DRAFT = "Draft", _("Draft")
+        SUBMITTED = "Submitted", _("Submitted")
+        IN_REVIEW = "In Review", _("In Review")
+        REVIEWED = "Reviewed", _("Reviewed")
+        REVISED = "Revised", _("Revised")
+        MODERATION_PANEL = "Moderation Panel", _("Moderation Panel")
+        APPROVED = "Approved", _("Approved")
+        REJECTED = "Rejected", _("Rejected")
+        LOCKED_FOR_USE = "Locked for Use", _("Locked for Use")
+
     objects = models.Manager()
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -49,7 +62,11 @@ class Item(models.Model):
         null=True,
         blank=True,
     )  # Will point to item_version.id
-    status = models.CharField(max_length=50)
+    status = models.CharField(
+        max_length=50,
+        choices=Status.choices,
+        default=Status.DRAFT,
+    )
     blueprint_ref = models.CharField(
         max_length=255,
         null=True,
@@ -173,8 +190,8 @@ class ItemTransition(models.Model):
         on_delete=models.CASCADE,
         related_name="transitions",
     )
-    from_state = models.CharField(max_length=50)
-    to_state = models.CharField(max_length=50)
+    from_state = models.CharField(max_length=50, choices=Item.Status.choices)
+    to_state = models.CharField(max_length=50, choices=Item.Status.choices)
     actor_id = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING)
     justification = models.TextField(null=True, blank=True)
     occurred_at = models.DateTimeField(auto_now_add=True)

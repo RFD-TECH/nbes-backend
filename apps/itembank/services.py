@@ -62,7 +62,7 @@ def create_or_update_item_draft(
         # Create a brand new draft item.
         item = Item.objects.create(
             author_id=author_user,
-            status="Draft",
+            status=Item.Status.DRAFT,
             **data,
         )
         version_no = 1
@@ -75,13 +75,13 @@ def create_or_update_item_draft(
             entity_type="item",
             entity_id=str(item.id),
             old_state=None,
-            new_state={"status": "Draft"},
+            new_state={"status": Item.Status.DRAFT},
         )
     else:
         # Lock the existing item before updating it.
         item = Item.objects.select_for_update().get(id=item_id, author_id=author_user)
 
-        if item.status not in ["Draft", "Revised"]:
+        if item.status not in [Item.Status.DRAFT, Item.Status.REVISED]:
             raise ValueError("You can only auto-save items in Draft or Revised states.")
 
         # Determine the next version number.
@@ -155,7 +155,7 @@ def submit_item_for_review(item_id: str, author_auth: dict) -> Item:
     item = Item.objects.select_for_update().get(id=item_id, author_id=author_user)
 
     # Ensure only draft-like states can be submitted.
-    if item.status not in ["Draft", "Revised"]:
+    if item.status not in [Item.Status.DRAFT, Item.Status.REVISED]:
         raise ValidationError(
             f"Cannot submit an item currently in state: {item.status}"
         )
@@ -170,14 +170,14 @@ def submit_item_for_review(item_id: str, author_auth: dict) -> Item:
     old_status = item.status
 
     # Transition the item into the submitted state.
-    item.status = "Submitted"
+    item.status = Item.Status.SUBMITTED
     item.save(update_fields=["status"])
 
     # Record the workflow transition for history tracking.
     ItemTransition.objects.create(
         item_id=item,
         from_state=old_status,
-        to_state="Submitted",
+        to_state=Item.Status.SUBMITTED,
         actor_id=author_user,
         justification="Item submitted for peer review",
     )
@@ -189,7 +189,7 @@ def submit_item_for_review(item_id: str, author_auth: dict) -> Item:
         entity_type="item",
         entity_id=str(item.id),
         old_state={"status": old_status},
-        new_state={"status": "Submitted"},
+        new_state={"status": Item.Status.SUBMITTED},
     )
 
     return item
@@ -337,7 +337,7 @@ def restore_item_version(item_id: str, version_id: str, actor_auth: dict) -> Ite
     # Validation Constraints
     if item.author_id_id != resolved_user.id:
         raise ValueError("Only the assigned author can restore item versions.")
-    if item.status not in ["Draft", "Revised"]:
+    if item.status not in [Item.Status.DRAFT, Item.Status.REVISED]:
         raise ValueError(
             f"Cannot restore versions while item is in {item.status} state."
         )
@@ -448,7 +448,7 @@ def process_suggestion_decision(
     # RBAC/State Validation
     if item.author_id_id != resolved_user.id:
         raise ValueError("Only the Item Writer can accept or decline suggestions.")
-    if item.status not in ["In Review", "Revised"]:
+    if item.status not in [Item.Status.IN_REVIEW, Item.Status.REVISED]:
         raise ValueError(
             f"Cannot process suggestions while item is in {item.status} state."
         )
@@ -509,13 +509,13 @@ def check_and_escalate_overdue_reviews() -> int:
             business_days += 1
 
     # Only look at items currently stuck in the review queue
-    stuck_items = Item.objects.filter(status="In Review")
+    stuck_items = Item.objects.filter(status=Item.Status.IN_REVIEW)
     escalated_count = 0
 
     for item in stuck_items:
         # Find the exact moment this item entered the 'In Review' state
         entry_transition = (
-            item.transitions.filter(to_state="In Review")
+            item.transitions.filter(to_state=Item.Status.IN_REVIEW)
             .order_by("-occurred_at")
             .first()
         )
@@ -567,7 +567,7 @@ def register_panel_vote(
     """
     item = Item.objects.select_for_update().get(id=item_id)
 
-    if item.status != "Moderation Panel":
+    if item.status != Item.Status.MODERATION_PANEL:
         raise ValueError(
             f"Item is not in the moderation phase. Current status: {item.status}"
         )
@@ -594,8 +594,29 @@ def register_panel_vote(
 
     # Consensus rules (Default 2 out of 3 match wins)
     if approve_count >= 2:
-        item.status = "Approved"  # Automatically advances status and locks for use
+        # Record the SRS-defined approval step before auto-locking the item for use.
+        previous_status = item.status
+        item.status = Item.Status.APPROVED
         item.save(update_fields=["status"])
+
+        ItemTransition.objects.create(
+            item_id=item,
+            from_state=previous_status,
+            to_state=Item.Status.APPROVED,
+            actor_id=panellist_id,
+            justification=justification,
+        )
+
+        item.status = Item.Status.LOCKED_FOR_USE
+        item.save(update_fields=["status"])
+
+        ItemTransition.objects.create(
+            item_id=item,
+            from_state=Item.Status.APPROVED,
+            to_state=Item.Status.LOCKED_FOR_USE,
+            actor_id=panellist_id,
+            justification="Item approved and automatically locked for use",
+        )
 
         # Fire async notification only after the transaction commits.
         transaction.on_commit(
@@ -603,7 +624,7 @@ def register_panel_vote(
                 dispatch_item_status_notification.delay(
                     item_id,
                     author_id,
-                    "APPROVED",
+                    Item.Status.LOCKED_FOR_USE,
                 )
             )
         )
@@ -615,14 +636,14 @@ def register_panel_vote(
             entity_type="item",
             entity_id=str(item.id),
             new_state={
-                "status": "Approved",
+                "status": Item.Status.LOCKED_FOR_USE,
                 "approvers": [
                     str(v.panellist_id) for v in votes.filter(vote="Approve")
                 ],
             },
         )
     elif reject_count >= 2:
-        item.status = "Rejected"
+        item.status = Item.Status.REJECTED
         item.save(update_fields=["status"])
 
         # Consolidate rejection rationale for the 5-minute notification trigger
@@ -632,8 +653,8 @@ def register_panel_vote(
                 dispatch_item_status_notification.delay(
                     item_id,
                     author_id,
-                    "REJECTED",
-                    rationales=rationales,
+                    Item.Status.REJECTED,
+                    rationales=consolidated_rationale,
                 )
             )
         )
@@ -643,7 +664,7 @@ def register_panel_vote(
             action="ITEM_CONSENSUAL_REJECTION",
             entity_type="item",
             entity_id=str(item.id),
-            new_state={"status": "Rejected"},
+            new_state={"status": Item.Status.REJECTED},
         )
 
     return item

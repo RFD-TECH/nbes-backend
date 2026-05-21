@@ -48,7 +48,9 @@ class Command(BaseCommand):
         _ = options
 
         # Compute local snapshot state fingerprint from approved items.
-        vault_items = Item.objects.filter(status="Approved").order_by("id")
+        vault_items = Item.objects.filter(status=Item.Status.LOCKED_FOR_USE).order_by(
+            "id"
+        )
         hasher = hashlib.sha256()
 
         for item in vault_items:
