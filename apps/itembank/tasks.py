@@ -8,6 +8,7 @@ particularly for dispatching notifications to downstream systems within SLA boun
 import logging
 import requests
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from celery import shared_task
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,17 @@ logger = logging.getLogger(__name__)
 def dispatch_item_status_notification(self, item_id, author_id, new_status, rationales=None):
     """
     Background worker task to dispatch SLA-bound notifications to System 14.
+
+    ``SYSTEM_14_SERVICE_TOKEN`` is validated here (call-site) rather than at
+    settings-import time, so ``collectstatic`` / ``migrate`` / unit tests
+    don't require the production secret to be present.
     """
+    if not settings.SYSTEM_14_SERVICE_TOKEN:
+        raise ImproperlyConfigured(
+            "SYSTEM_14_SERVICE_TOKEN must be set before dispatching notifications "
+            "to System 14."
+        )
+
     logger.info(
         "Preparing %s notification for Author %s (Item %s)",
         new_status,
