@@ -15,6 +15,9 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     AssetViewSet,
     ItemAuthoringViewSet,
+    ItemSearchViewSet,
+    PaperViewSet,
+    SavedSearchViewSet,
     VaultOperationsViewSet,
 )
 
@@ -27,6 +30,9 @@ router = DefaultRouter()
 # argument is used to name the URL patterns (useful when the viewset does not
 # provide a queryset or when custom naming is desired).
 router.register(r"items", ItemAuthoringViewSet, basename="item")
+router.register(r"item-search", ItemSearchViewSet, basename="item-search")
+router.register(r"saved-searches", SavedSearchViewSet, basename="saved-search")
+router.register(r"papers", PaperViewSet, basename="paper")
 router.register(r"assets", AssetViewSet, basename="asset")
 router.register(r"vault", VaultOperationsViewSet, basename="vault")
 
