@@ -29,7 +29,15 @@ from drf_spectacular.utils import (
 )
 
 from .filters import ItemFilter
-from .models import Item, ItemUsage, ItemVersion, MetadataSchema, Paper, SavedSearch, VaultExportRequest
+from .models import (
+    Item,
+    ItemUsage,
+    ItemVersion,
+    MetadataSchema,
+    Paper,
+    SavedSearch,
+    VaultExportRequest,
+)
 from .serializers import (
     BulkRetagSerializer,
     ItemDraftSerializer,
@@ -415,9 +423,13 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
                 message="Workflow transition applied.",
             )
         except ObjectDoesNotExist:
-            return error_response("Item or user not found.", status_code=status.HTTP_404_NOT_FOUND)
+            return error_response(
+                "Item or user not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
         except ValueError as e:
-            return error_response(str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+            return error_response(
+                str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
 
 
 class AssetViewSet(viewsets.GenericViewSet):
@@ -505,11 +517,15 @@ class VaultOperationsViewSet(viewsets.GenericViewSet):
 
             # Immediately alert Chair/DG after the row commits (SRS-NBE-F02-07 / NBE-N01).
             # Best-effort: broker failures must not roll back or fail the request.
-            def _enqueue_alert(req_id=str(req.id), sub=str(request.auth["sub"]), sc=req.scope):
+            def _enqueue_alert(
+                req_id=str(req.id), sub=str(request.auth["sub"]), sc=req.scope
+            ):
                 try:
                     dispatch_vault_export_alert.delay(req_id, sub, sc)
                 except Exception:
-                    logger.exception("Failed to enqueue vault export alert for request %s", req_id)
+                    logger.exception(
+                        "Failed to enqueue vault export alert for request %s", req_id
+                    )
 
             transaction.on_commit(_enqueue_alert)
 
@@ -1000,7 +1016,9 @@ class MetadataSchemaViewSet(viewsets.ModelViewSet):
                 "Admin user not found.", status_code=status.HTTP_404_NOT_FOUND
             )
         except ValueError as e:
-            return error_response(str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+            return error_response(
+                str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
 
     @action(detail=True, methods=["post"], url_path="activate")
     def activate(self, request, pk=None):
@@ -1011,7 +1029,9 @@ class MetadataSchemaViewSet(viewsets.ModelViewSet):
             )
             schema = locked.filter(id=pk).first()
             if schema is None:
-                return error_response("Schema not found.", status_code=status.HTTP_404_NOT_FOUND)
+                return error_response(
+                    "Schema not found.", status_code=status.HTTP_404_NOT_FOUND
+                )
             locked.exclude(id=pk).update(is_active=False)
             schema.is_active = True
             schema.save(update_fields=["is_active"])
@@ -1053,7 +1073,9 @@ class MetadataSchemaViewSet(viewsets.ModelViewSet):
                 "Admin user not found.", status_code=status.HTTP_404_NOT_FOUND
             )
         except ValueError as e:
-            return error_response(str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+            return error_response(
+                str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
 
     @action(detail=False, methods=["get"], url_path="active")
     def active_schema(self, request):
