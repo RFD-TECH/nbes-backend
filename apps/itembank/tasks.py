@@ -74,3 +74,15 @@ def dispatch_item_status_notification(self, item_id, author_id, new_status, rati
     except requests.exceptions.RequestException as e:
         logger.error("System 14 integration failed: %s. Celery will retry.", str(e))
         raise  # Pass the error up so Celery knows it needs to retry
+
+
+@shared_task(name="apps.itembank.tasks.flag_low_quality_items_task")
+def flag_low_quality_items_task():
+    """Celery wrapper around the ``flag_low_quality_items`` mgmt command.
+
+    Scheduled by Celery Beat per SRS-NBE-F02-09 so the monthly quality
+    job runs without operator intervention.
+    """
+    from django.core.management import call_command
+
+    call_command("flag_low_quality_items")

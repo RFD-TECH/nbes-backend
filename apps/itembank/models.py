@@ -12,6 +12,7 @@ and vault access/export auditing.
 import uuid
 from django.db import models
 from django.conf import settings
+from django.core.validators import MinValueValidator
 from django.utils.translation import gettext_lazy as _
 
 
@@ -66,16 +67,25 @@ class Item(models.Model):
         max_length=50,
         choices=Status.choices,
         default=Status.DRAFT,
+        db_index=True,
     )
     blueprint_ref = models.CharField(
         max_length=255,
         null=True,
         blank=True,
+        db_index=True,
     )
-    subject = models.CharField(max_length=255, null=True, blank=True)
-    topic = models.CharField(max_length=255, null=True, blank=True)
-    difficulty = models.CharField(max_length=50, null=True, blank=True)
-    cognitive_level = models.CharField(max_length=50, null=True, blank=True)
+    quality_flagged = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="True if item has underperformed across two sittings and requires moderator review",
+    )
+    subject = models.CharField(max_length=255, null=True, blank=True, db_index=True)
+    topic = models.CharField(max_length=255, null=True, blank=True, db_index=True)
+    difficulty = models.CharField(max_length=50, null=True, blank=True, db_index=True)
+    cognitive_level = models.CharField(
+        max_length=50, null=True, blank=True, db_index=True
+    )
     marks = models.DecimalField(
         max_digits=5,
         decimal_places=2,
@@ -94,6 +104,8 @@ class Item(models.Model):
         related_name="authored_items",
     )
     audit_hash = models.CharField(max_length=256, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
 
     def __str__(self):
         item_type = getattr(self, "item_type", "item")
@@ -338,16 +350,33 @@ class Paper(models.Model):
     - status: workflow status of the paper.
     """
 
+    class Status(models.TextChoices):
+        DRAFT = "Draft", _("Draft")
+        CONSTRUCTED = "Constructed", _("Constructed")
+        READY_FOR_APPROVAL = "Ready For Approval", _("Ready For Approval")
+        APPROVED = "Approved", _("Approved")
+        REJECTED = "Rejected", _("Rejected")
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    sitting_ref = models.CharField(max_length=255)
+    sitting_ref = models.CharField(max_length=255, db_index=True)
     subject = models.CharField(max_length=255)
     mode = models.CharField(max_length=50)
     total_marks = models.DecimalField(max_digits=6, decimal_places=2)
     time_limit = models.IntegerField()
     item_ids = models.JSONField(default=list)  # Maps to item_ids[]
+    # sections: optional ordered list of {"name", "item_ids", "marks", "time"}
+    # used to enforce the blueprint-defined section structure (NBE-F02-08).
+    sections = models.JSONField(default=list, blank=True)
     variants = models.JSONField(default=list)  # Maps to variants[]
-    blueprint_ref = models.CharField(max_length=255)
-    status = models.CharField(max_length=50)
+    blueprint_ref = models.CharField(max_length=255, db_index=True)
+    status = models.CharField(
+        max_length=50,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
 
     def __str__(self):
         return f"Paper {self.id} - {self.sitting_ref}"
@@ -375,8 +404,13 @@ class ItemUsage(models.Model):
         null=True,
         blank=True,
     )
-    sitting_ref = models.CharField(max_length=255)
+    sitting_ref = models.CharField(max_length=255, db_index=True)
     count = models.IntegerField(default=1)
+    candidate_count = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        help_text="Number of candidates who saw this item in the referenced sitting.",
+    )
     facility_index = models.DecimalField(
         max_digits=5,
         decimal_places=4,
@@ -389,4 +423,26 @@ class ItemUsage(models.Model):
         null=True,
         blank=True,
     )
-    recorded_at = models.DateTimeField(auto_now_add=True)
+    recorded_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(candidate_count__gte=0),
+                name="itemusage_candidate_count_non_negative",
+            )
+        ]
+
+
+class SavedSearch(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="saved_searches",
+    )
+    name = models.CharField(max_length=255)
+    query = models.JSONField()  # stores the filter params
+    shared_with_secretariat = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)

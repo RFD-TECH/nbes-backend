@@ -3,11 +3,17 @@
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
-from rest_framework import viewsets, status
+from django.http import HttpResponse
+from django.db.models import Count, OuterRef, Subquery
+from rest_framework import viewsets, status, filters as drf_filters
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser
-from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.core.exceptions import FieldError, ObjectDoesNotExist, ValidationError
 from django.utils import timezone
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.exceptions import NotFound
+from rest_framework.request import Request
+from rest_framework.test import APIRequestFactory
 from shared.permissions import has_permission
 from shared.exceptions import error_response, success_response
 from drf_spectacular.utils import (
@@ -17,23 +23,37 @@ from drf_spectacular.utils import (
     OpenApiTypes,
 )
 
-from .models import Item, VaultExportRequest
+from .filters import ItemFilter
+from .models import Item, ItemUsage, ItemVersion, Paper, SavedSearch, VaultExportRequest
 from .serializers import (
     ItemDraftSerializer,
+    ItemListSerializer,
     ItemVersionSerializer,
     ItemCommentSerializer,
+    ManualPaperSerializer,
+    RuleBasedPaperSerializer,
+    SavedSearchSerializer,
     SuggestionDecisionSerializer,
     VaultExportSerializer,
     PanelVoteSerializer,
 )
 from .services import (
     create_or_update_item_draft,
+    create_manual_paper,
     submit_item_for_review,
+    submit_paper_for_approval,
     restore_item_version,
     process_suggestion_decision,
     register_panel_vote,
     execute_vault_cosign,
+    export_paper_digital,
+    export_paper_docx,
+    export_paper_pdf,
+    generate_paper_rule_based,
+    record_paper_export,
 )
+from apps.audit.models import AuditEvent
+from shared import rbac as shared_rbac
 from .serializers import AssetUploadSerializer
 from .services import process_asset_upload
 
@@ -58,6 +78,31 @@ def _validation_error_message(exc: ValidationError) -> str:
             return " ".join(parts)
 
     return str(exc)
+
+
+def _item_search_queryset(base_qs):
+    latest_usage = ItemUsage.objects.filter(item_id=OuterRef("pk")).order_by(
+        "-recorded_at"
+    )
+    current_version = ItemVersion.objects.filter(
+        item_id=OuterRef("pk"), id=OuterRef("current_version_id")
+    )
+    return base_qs.annotate(
+        usage_count=Count("usage_history", distinct=True),
+        latest_facility_index=Subquery(latest_usage.values("facility_index")[:1]),
+        latest_discrimination_index=Subquery(
+            latest_usage.values("discrimination_index")[:1]
+        ),
+        current_version_content=Subquery(current_version.values("content")[:1]),
+    )
+
+
+def _resolve_request_user(request):
+    User = get_user_model()
+    try:
+        return User.objects.get(keycloak_sub=request.auth["sub"])
+    except (FieldError, KeyError, ObjectDoesNotExist):
+        return None
 
 
 @extend_schema_view(
@@ -389,7 +434,7 @@ class VaultOperationsViewSet(viewsets.GenericViewSet):
         User = get_user_model()
         try:
             requester = User.objects.get(keycloak_sub=request.auth["sub"])
-        except ObjectDoesNotExist:
+        except (ObjectDoesNotExist, FieldError, KeyError):
             return error_response(
                 "Requester not found.",
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -434,3 +479,421 @@ class VaultOperationsViewSet(viewsets.GenericViewSet):
             return error_response(
                 str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
             )
+
+
+@extend_schema_view(
+    create=extend_schema(request=ManualPaperSerializer),
+    generate_rule_based=extend_schema(request=RuleBasedPaperSerializer),
+    submit_for_approval=extend_schema(request=None),
+    export_pdf=extend_schema(request=None),
+    export_word=extend_schema(request=None),
+    export_digital=extend_schema(request=None),
+)
+class PaperViewSet(viewsets.GenericViewSet):
+    """Construct, generate, and export examination papers (NBE-F02-08/09)."""
+
+    permission_classes = [has_permission("paper:construct")]
+    serializer_class = ManualPaperSerializer
+
+    def _resolve_user(self, request):
+        User = get_user_model()
+        try:
+            return User.objects.get(keycloak_sub=request.auth["sub"])
+        except (FieldError, KeyError) as exc:
+            raise ObjectDoesNotExist("Requester not found.") from exc
+
+    def create(self, request):
+        """Manually construct a paper from a curated list of locked items."""
+        serializer = ManualPaperSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                "Invalid paper data",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            user = self._resolve_user(request)
+        except ObjectDoesNotExist:
+            return error_response(
+                "Requester not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+        try:
+            paper = create_manual_paper(
+                serializer.validated_data, user, request=request
+            )
+        except ValueError as exc:
+            return error_response(
+                str(exc), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+        return success_response(
+            data={
+                "paper_id": str(paper.id),
+                "status": paper.status,
+                "item_ids": [str(i) for i in paper.item_ids],
+                "sections": paper.sections,
+                "variants": paper.variants,
+            },
+            message="Paper constructed successfully.",
+            status_code=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["post"], url_path="generate")
+    def generate_rule_based(self, request):
+        """Rule-based paper generation."""
+        serializer = RuleBasedPaperSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                "Invalid generation parameters",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            user = self._resolve_user(request)
+        except ObjectDoesNotExist:
+            return error_response(
+                "Requester not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+        try:
+            paper = generate_paper_rule_based(
+                serializer.validated_data, user, request=request
+            )
+            return success_response(
+                data={
+                    "paper_id": str(paper.id),
+                    "item_ids": [str(i) for i in paper.item_ids],
+                    "variants": paper.variants,
+                },
+                message="Paper generated successfully.",
+                status_code=status.HTTP_201_CREATED,
+            )
+        except ValueError as e:
+            return error_response(
+                str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+
+    @action(detail=True, methods=["post"], url_path="submit-for-approval")
+    def submit_for_approval(self, request, pk=None):
+        """Move a constructed paper into the NBEC approval queue (F02-08)."""
+        try:
+            user = self._resolve_user(request)
+        except ObjectDoesNotExist:
+            return error_response(
+                "Requester not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+        try:
+            paper = submit_paper_for_approval(pk, user)
+        except ObjectDoesNotExist:
+            return error_response(
+                "Paper not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+        except ValueError as exc:
+            return error_response(
+                str(exc), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+        return success_response(
+            data={"paper_id": str(paper.id), "status": paper.status},
+            message="Paper submitted for NBEC approval.",
+        )
+
+    def _get_paper_or_404(self, pk):
+        try:
+            return Paper.objects.get(id=pk)
+        except (ObjectDoesNotExist, ValueError):
+            return None
+
+    @action(detail=True, methods=["get"], url_path="export/pdf")
+    def export_pdf(self, request, pk=None):
+        paper = self._get_paper_or_404(pk)
+        if paper is None:
+            return error_response(
+                "Paper not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+        try:
+            user = self._resolve_user(request)
+        except ObjectDoesNotExist:
+            return error_response(
+                "Requester not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+        pdf_bytes = export_paper_pdf(paper)
+        record_paper_export(paper, user=user, fmt="pdf", request=request)
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="paper-{paper.id}.pdf"'
+        return response
+
+    @action(detail=True, methods=["get"], url_path="export/word")
+    def export_word(self, request, pk=None):
+        paper = self._get_paper_or_404(pk)
+        if paper is None:
+            return error_response(
+                "Paper not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+        try:
+            user = self._resolve_user(request)
+        except ObjectDoesNotExist:
+            return error_response(
+                "Requester not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+        try:
+            docx_bytes = export_paper_docx(paper)
+        except RuntimeError as exc:
+            return error_response(str(exc), status_code=status.HTTP_501_NOT_IMPLEMENTED)
+        record_paper_export(paper, user=user, fmt="docx", request=request)
+        response = HttpResponse(
+            docx_bytes,
+            content_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            ),
+        )
+        response["Content-Disposition"] = (
+            f'attachment; filename="paper-{paper.id}.docx"'
+        )
+        return response
+
+    @action(detail=True, methods=["get"], url_path="export/digital")
+    def export_digital(self, request, pk=None):
+        paper = self._get_paper_or_404(pk)
+        if paper is None:
+            return error_response(
+                "Paper not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+        try:
+            user = self._resolve_user(request)
+        except ObjectDoesNotExist:
+            return error_response(
+                "Requester not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+        payload = export_paper_digital(paper)
+        record_paper_export(paper, user=user, fmt="digital", request=request)
+        return success_response(data=payload, message="Digital paper export ready.")
+
+
+def _rbac_scoped_item_queryset(request):
+    """Return an ``Item`` queryset filtered to what the caller may read.
+
+    Implements SRS-NBE-F02-10's "search is RBAC-aware" clause. Roles are
+    resolved through ``shared.rbac.get_nbes_role_names`` so the resolution
+    honours the IAM client-role contract (and falls back to legacy
+    realm-roles when needed).
+
+    For an Item Writer the queryset is narrowed to items they authored.
+    When the local user record cannot be resolved (e.g. JWT ``sub`` not
+    yet mirrored to a profile) the scope degrades to *deny by default*
+    so the search never leaks items.
+    """
+    qs = Item.objects.all()
+    payload = request.auth or {}
+    role_names = set(shared_rbac.get_nbes_role_names(payload))
+    if "item_writer" in role_names:
+        try:
+            user = get_user_model().objects.get(keycloak_sub=payload.get("sub"))
+        except (ObjectDoesNotExist, FieldError):
+            return qs.none()
+        return qs.filter(author_id=user)
+    if "moderator" in role_names or "reviewer" in role_names:
+        return qs.filter(status=Item.Status.IN_REVIEW)
+    return qs
+
+
+class ItemSearchViewSet(viewsets.ReadOnlyModelViewSet):
+    """Advanced item search (SRS-NBE-F02-10).
+
+    RBAC-scoped via ``shared.rbac``. Item Writers see only items they
+    authored; Moderators/Reviewers see items in ``In Review``; everyone
+    else with ``item:search`` may search the whole bank.
+    """
+
+    permission_classes = [has_permission("item:search")]
+    serializer_class = ItemListSerializer
+    filter_backends = [
+        DjangoFilterBackend,
+        drf_filters.SearchFilter,
+        drf_filters.OrderingFilter,
+    ]
+    filterset_class = ItemFilter
+    # SRS-NBE-F02-10 keyword search must hit stem, options, rubric, metadata.
+    # Item content lives on the *current* version only, not all historical
+    # versions; we still expose subject/topic/blueprint_ref for metadata matching.
+    search_fields = ["subject", "topic", "blueprint_ref", "current_version_content"]
+    ordering_fields = ["subject", "topic", "difficulty", "marks", "updated_at"]
+    ordering = ["subject", "topic"]
+
+    def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Item.objects.none()
+        return _item_search_queryset(_rbac_scoped_item_queryset(self.request))
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        AuditEvent.record(
+            actor_id=(request.auth or {}).get("sub"),
+            action="SEARCH_EXECUTED",
+            entity_type="item",
+            new_state={
+                "filters": dict(getattr(request, "query_params", None) or request.GET),
+                "result_count": (
+                    response.data.get("count")
+                    if isinstance(response.data, dict)
+                    else None
+                ),
+            },
+            ip_address=getattr(request, "ip_address", None),
+        )
+        return response
+
+    @action(detail=False, methods=["get"], url_path="export")
+    def export(self, request):
+        """Export the filtered search results (SRS-NBE-F02-10).
+
+        Returns a JSON payload of the filter result and writes a
+        ``SEARCH_EXPORTED`` audit row capturing the filters and the
+        resulting count, per the SRS.
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        # Hard cap on exports so a single request can't dump the bank.
+        rows = ItemListSerializer(queryset[:5000], many=True).data
+        AuditEvent.record(
+            actor_id=(request.auth or {}).get("sub"),
+            action="SEARCH_EXPORTED",
+            entity_type="item",
+            new_state={
+                "filters": dict(getattr(request, "query_params", None) or request.GET),
+                "result_count": len(rows),
+            },
+            ip_address=getattr(request, "ip_address", None),
+        )
+        return success_response(
+            data={"count": len(rows), "results": rows},
+            message="Search results exported.",
+        )
+
+
+@extend_schema_view(
+    results=extend_schema(request=None),
+)
+class SavedSearchViewSet(viewsets.ModelViewSet):
+    """CRUD for per-user saved searches (SRS-NBE-F02-10)."""
+
+    permission_classes = [has_permission("search:manage")]
+    serializer_class = SavedSearchSerializer
+    queryset = SavedSearch.objects.none()
+
+    def _viewer_is_secretariat(self) -> bool:
+        return "nbec_secretariat" in set(
+            shared_rbac.get_nbes_role_names(self.request.auth or {})
+        )
+
+    def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return SavedSearch.objects.none()
+        user = _resolve_request_user(self.request)
+        # Secretariat can still see *shared* searches even when their own
+        # auth.User row can't be resolved (auth.User has no keycloak_sub
+        # column in the current schema).
+        if user is None:
+            if self._viewer_is_secretariat():
+                return SavedSearch.objects.filter(
+                    shared_with_secretariat=True
+                ).order_by("-updated_at")
+            return SavedSearch.objects.none()
+        from django.db.models import Q as _Q
+
+        qs = SavedSearch.objects.filter(user=user)
+        if self._viewer_is_secretariat():
+            qs = SavedSearch.objects.filter(
+                _Q(user=user) | _Q(shared_with_secretariat=True)
+            )
+        return qs.order_by("-updated_at")
+
+    def perform_create(self, serializer):
+        user = _resolve_request_user(self.request)
+        if user is None:
+            raise NotFound("Requester not found.")
+        serializer.save(user=user)
+        AuditEvent.record(
+            actor_id=self.request.auth["sub"],
+            action="SAVED_SEARCH_CREATED",
+            entity_type="saved_search",
+            entity_id=serializer.instance.id,
+            new_state={
+                "name": serializer.instance.name,
+                "shared": serializer.instance.shared_with_secretariat,
+            },
+        )
+
+    def perform_update(self, serializer):
+        super().perform_update(serializer)
+        AuditEvent.record(
+            actor_id=self.request.auth["sub"],
+            action="SAVED_SEARCH_UPDATED",
+            entity_type="saved_search",
+            entity_id=serializer.instance.id,
+            new_state={
+                "name": serializer.instance.name,
+                "shared": serializer.instance.shared_with_secretariat,
+            },
+        )
+
+    def perform_destroy(self, instance):
+        AuditEvent.record(
+            actor_id=self.request.auth["sub"],
+            action="SAVED_SEARCH_DELETED",
+            entity_type="saved_search",
+            entity_id=instance.id,
+            old_state={"name": instance.name},
+        )
+        super().perform_destroy(instance)
+
+    @action(detail=True, methods=["get"], url_path="results")
+    def results(self, request, pk=None):
+        """Execute the stored query under the caller's RBAC scope."""
+        try:
+            saved = self.get_queryset().get(id=pk)
+        except (ObjectDoesNotExist, ValueError, ValidationError):
+            return error_response(
+                "Saved search not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+
+        query = saved.query if isinstance(saved.query, dict) else {}
+        # Apply the same RBAC scope the live search endpoint uses so a
+        # shared saved search NEVER leaks items the viewer cannot see.
+        base_qs = _item_search_queryset(_rbac_scoped_item_queryset(request))
+        filter_params = {
+            key: value
+            for key, value in query.items()
+            if key not in {"search", "ordering"}
+        }
+        filterset = ItemFilter(filter_params, queryset=base_qs)
+        if not filterset.is_valid():
+            return error_response(
+                "Saved search contains invalid filter parameters.",
+                errors=filterset.errors,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        factory = APIRequestFactory()
+        raw_request = factory.get(
+            getattr(request, "path", "/api/v1/itembank/item-search/"),
+            data=query,
+        )
+        search_request = Request(raw_request)
+        setattr(search_request, "_auth", request.auth)
+        setattr(search_request, "_user", getattr(request, "user", None))
+        search_viewset = ItemSearchViewSet()
+        setattr(search_viewset, "request", search_request)
+        setattr(search_viewset, "kwargs", {})
+        setattr(search_viewset, "action", "list")
+        setattr(search_viewset, "format_kwarg", None)
+        items = search_viewset.filter_queryset(base_qs)[:200]
+        data = ItemListSerializer(items, many=True).data
+        AuditEvent.record(
+            actor_id=(request.auth or {}).get("sub"),
+            action="SAVED_SEARCH_EXECUTED",
+            entity_type="saved_search",
+            entity_id=saved.id,
+            new_state={"result_count": len(data)},
+            ip_address=getattr(request, "ip_address", None),
+        )
+        return success_response(
+            data={"count": len(data), "results": data},
+            message="Saved search executed.",
+        )

@@ -10,9 +10,17 @@ validation only.
 """
 
 import json
+from types import SimpleNamespace
 
 from rest_framework import serializers
-from .models import ItemVersion, ItemComment, VaultExportRequest, PanelVote
+from .models import (
+    Item,
+    ItemVersion,
+    ItemComment,
+    VaultExportRequest,
+    PanelVote,
+    SavedSearch,
+)
 
 from .services import create_or_update_item_draft
 
@@ -265,3 +273,170 @@ class VaultExportSerializer(serializers.ModelSerializer):
             "created_at",
             "cosigner_id",
         ]
+
+
+class ItemListSerializer(serializers.ModelSerializer):
+    """Summary serializer for item search results.
+
+    SRS-NBE-F02-10 result list shows item ID, status, last-modified date,
+    usage count, and quality indicators. ``usage_count``,
+    ``latest_facility_index``, ``latest_discrimination_index`` and
+    ``last_modified`` are computed from related rows.
+    """
+
+    last_modified = serializers.DateTimeField(source="updated_at", read_only=True)
+    usage_count = serializers.SerializerMethodField()
+    latest_facility_index = serializers.SerializerMethodField()
+    latest_discrimination_index = serializers.SerializerMethodField()
+    author_id = serializers.UUIDField(source="author_id_id", read_only=True)
+
+    class Meta:
+        model = Item
+        fields = [
+            "id",
+            "item_type",
+            "status",
+            "subject",
+            "topic",
+            "difficulty",
+            "cognitive_level",
+            "marks",
+            "time",
+            "blueprint_ref",
+            "quality_flagged",
+            "current_version_id",
+            "author_id",
+            "last_modified",
+            "usage_count",
+            "latest_facility_index",
+            "latest_discrimination_index",
+        ]
+        read_only_fields = fields
+
+    def _latest_usage(self, obj):
+        if "_latest_usage_cache" not in getattr(obj, "__dict__", {}):
+            obj.__dict__["_latest_usage_cache"] = SimpleNamespace(
+                facility_index=getattr(obj, "latest_facility_index", None),
+                discrimination_index=getattr(obj, "latest_discrimination_index", None),
+            )
+        return obj.__dict__["_latest_usage_cache"]
+
+    def get_usage_count(self, obj) -> int:
+        return getattr(obj, "usage_count", 0)
+
+    def get_latest_facility_index(self, obj):
+        usage = self._latest_usage(obj)
+        return (
+            str(usage.facility_index)
+            if usage and usage.facility_index is not None
+            else None
+        )
+
+    def get_latest_discrimination_index(self, obj):
+        usage = self._latest_usage(obj)
+        return (
+            str(usage.discrimination_index)
+            if usage and usage.discrimination_index is not None
+            else None
+        )
+
+
+class SavedSearchSerializer(serializers.ModelSerializer):
+    """CRUD serializer for ``SavedSearch`` records (NBE-F02-10)."""
+
+    class Meta:
+        model = SavedSearch
+        fields = [
+            "id",
+            "name",
+            "query",
+            "shared_with_secretariat",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_query(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError(
+                "query must be a JSON object mapping filter keys to values."
+            )
+        return value
+
+
+class PaperSectionSerializer(serializers.Serializer):
+    """Inline serializer for a single paper section (SRS-NBE-F02-08)."""
+
+    name = serializers.CharField(max_length=100)
+    item_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=False)
+    marks = serializers.DecimalField(max_digits=6, decimal_places=2, required=False)
+    time = serializers.IntegerField(required=False, min_value=1)
+
+    def create(self, validated_data):
+        return validated_data
+
+    def update(self, instance, validated_data):
+        raise NotImplementedError(
+            "update() is not implemented for PaperSectionSerializer"
+        )
+
+
+class ManualPaperSerializer(serializers.Serializer):
+    """Validates payload for manual paper construction (NBE-F02-08)."""
+
+    sitting_ref = serializers.CharField(max_length=255)
+    subject = serializers.CharField(max_length=255)
+    mode = serializers.CharField(max_length=50)
+    total_marks = serializers.DecimalField(max_digits=6, decimal_places=2)
+    time_limit = serializers.IntegerField(min_value=1)
+    item_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=False)
+    sections = serializers.ListField(
+        child=PaperSectionSerializer(), required=False, allow_empty=True
+    )
+    blueprint_ref = serializers.CharField(
+        max_length=255, required=False, allow_blank=True
+    )
+
+    def create(self, validated_data):
+        return validated_data
+
+    def update(self, instance, validated_data):
+        raise NotImplementedError(
+            "update() is not implemented for ManualPaperSerializer"
+        )
+
+
+class RuleBasedPaperSerializer(serializers.Serializer):
+    sitting_ref = serializers.CharField()
+    subject = serializers.CharField()
+    mode = serializers.CharField()
+    total_marks = serializers.DecimalField(max_digits=6, decimal_places=2)
+    time_limit = serializers.IntegerField()
+    difficulty_distribution = serializers.DictField(
+        child=serializers.IntegerField(min_value=0, max_value=100)
+    )
+    topic_coverage = serializers.DictField(
+        child=serializers.IntegerField(min_value=0, max_value=100)
+    )
+    blueprint_ref = serializers.CharField(required=False, allow_blank=True)
+    variants_count = serializers.IntegerField(required=False, min_value=1, default=1)
+
+    def validate(self, attrs):
+        # Validate that all percentages sum to 100
+        diff_dist = attrs.get("difficulty_distribution", {})
+        if sum(diff_dist.values()) != 100:
+            raise serializers.ValidationError(
+                {"difficulty_distribution": "Percentages must sum to 100."}
+            )
+        topic_dist = attrs.get("topic_coverage", {})
+        if sum(topic_dist.values()) != 100:
+            raise serializers.ValidationError(
+                {"topic_coverage": "Percentages must sum to 100."}
+            )
+        return attrs
+
+    def create(self, validated_data):
+        return validated_data
+
+    def update(self, instance, validated_data):
+        raise NotImplementedError("Update is not supported by this serializer.")

@@ -195,6 +195,44 @@ CELERY_TASK_QUEUES = {
     "sla-monitor": {},       # SLA checking — runs every 15 minutes
     "vault-integrity": {},   # Daily vault SHA-256 integrity check
     "outbox": {},            # Outbox poller — runs every 5 seconds
+    "item-quality": {},      # Monthly low-quality item flag job (NBE-F02-09)
+}
+
+# ── Itembank · paper construction & quality ──────────────────────────────────
+# SRS-NBE-F02-08 / F02-09 / F02-10 tunables.
+ITEM_COOLDOWN_SITTINGS = int(os.environ.get("ITEM_COOLDOWN_SITTINGS", "3"))
+PAPER_MARKS_TOLERANCE = os.environ.get("PAPER_MARKS_TOLERANCE", "5.0")
+PAPER_VERIFICATION_BASE_URL = os.environ.get(
+    "PAPER_VERIFICATION_BASE_URL", "https://verify.gsl.edu.gh"
+)
+# SRS-NBE-F02-09 acceptance: discrimination threshold must be configured;
+# the management command refuses to run when this is unset.
+DISCRIMINATION_THRESHOLD = os.environ.get("DISCRIMINATION_THRESHOLD", "")
+
+# Blueprint catalogue. Until a Phase 4 Blueprint model ships, the paper
+# constructor reads from this dict to enforce topic coverage and section
+# structure. Shape:
+#   {
+#       "<blueprint_ref>": {
+#           "topics": {"Contract Law": 40, "Tort Law": 60},   # percent of paper marks
+#           "sections": [
+#               {"name": "Section A", "marks": 30, "time": 45},
+#               {"name": "Section B", "marks": 70, "time": 75},
+#           ],
+#       },
+#   }
+NBES_BLUEPRINTS: dict = {}
+
+# Celery Beat schedule
+from celery.schedules import crontab  # noqa: E402
+
+CELERY_BEAT_SCHEDULE = {
+    "itembank-flag-low-quality-items": {
+        "task": "apps.itembank.tasks.flag_low_quality_items_task",
+        # SRS-NBE-F02-09: monthly quality job.
+        "schedule": crontab(day_of_month=1, hour=2, minute=0),
+        "options": {"queue": "item-quality"},
+    },
 }
 
 # ── Kafka ─────────────────────────────────────────────────────────────────────
