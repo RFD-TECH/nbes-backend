@@ -3,6 +3,61 @@
 from django.db import migrations, models
 
 
+CREATE_APPEND_ONLY_TRIGGER_SQL = """
+CREATE OR REPLACE FUNCTION audit_event_no_update_delete()
+RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'audit_auditevent is append-only';
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+     WHERE t.tgname = 'audit_event_block_update'
+       AND c.relname = 'audit_auditevent'
+  ) THEN
+    CREATE TRIGGER audit_event_block_update
+      BEFORE UPDATE ON audit_auditevent
+      FOR EACH ROW EXECUTE FUNCTION audit_event_no_update_delete();
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+     WHERE t.tgname = 'audit_event_block_delete'
+       AND c.relname = 'audit_auditevent'
+  ) THEN
+    CREATE TRIGGER audit_event_block_delete
+      BEFORE DELETE ON audit_auditevent
+      FOR EACH ROW EXECUTE FUNCTION audit_event_no_update_delete();
+  END IF;
+END;
+$$;
+"""
+
+
+DROP_APPEND_ONLY_TRIGGER_SQL = """
+DROP TRIGGER IF EXISTS audit_event_block_update ON audit_auditevent;
+DROP TRIGGER IF EXISTS audit_event_block_delete ON audit_auditevent;
+DROP FUNCTION IF EXISTS audit_event_no_update_delete();
+"""
+
+
+def create_append_only_trigger(apps, schema_editor):
+    if schema_editor.connection.vendor == "postgresql":
+        schema_editor.execute(CREATE_APPEND_ONLY_TRIGGER_SQL)
+
+
+def drop_append_only_trigger(apps, schema_editor):
+    if schema_editor.connection.vendor == "postgresql":
+        schema_editor.execute(DROP_APPEND_ONLY_TRIGGER_SQL)
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -15,39 +70,8 @@ class Migration(migrations.Migration):
             name='entity_type',
             field=models.CharField(blank=True, default='', max_length=100),
         ),
-        migrations.RunSQL(
-            sql="""
-            CREATE OR REPLACE FUNCTION audit_event_no_update_delete()
-            RETURNS trigger AS $$
-            BEGIN
-              RAISE EXCEPTION 'audit_auditevent is append-only';
-            END;
-            $$ LANGUAGE plpgsql;
-
-            DO $$
-            BEGIN
-              IF NOT EXISTS (
-                SELECT 1 FROM pg_trigger WHERE tgname = 'audit_event_block_update'
-              ) THEN
-                CREATE TRIGGER audit_event_block_update
-                  BEFORE UPDATE ON audit_auditevent
-                  FOR EACH ROW EXECUTE FUNCTION audit_event_no_update_delete();
-              END IF;
-
-              IF NOT EXISTS (
-                SELECT 1 FROM pg_trigger WHERE tgname = 'audit_event_block_delete'
-              ) THEN
-                CREATE TRIGGER audit_event_block_delete
-                  BEFORE DELETE ON audit_auditevent
-                  FOR EACH ROW EXECUTE FUNCTION audit_event_no_update_delete();
-              END IF;
-            END;
-            $$;
-            """,
-            reverse_sql="""
-            DROP TRIGGER IF EXISTS audit_event_block_update ON audit_auditevent;
-            DROP TRIGGER IF EXISTS audit_event_block_delete ON audit_auditevent;
-            DROP FUNCTION IF EXISTS audit_event_no_update_delete();
-            """,
+        migrations.RunPython(
+            create_append_only_trigger,
+            reverse_code=drop_append_only_trigger,
         ),
     ]

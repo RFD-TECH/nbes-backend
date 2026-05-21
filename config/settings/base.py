@@ -44,6 +44,7 @@ LOCAL_APPS = [
     "apps.audit",
     "apps.sla",
     "apps.reporting",
+    "apps.dashboards",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -53,15 +54,24 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
+    # Injects X-Request-ID and captures IP/user-agent for audit events.
+    # See shared/middleware.py
+    "shared.middleware.AuditMiddleware",
+    # Edge throttle and 24h IP block. Counts rejected (401/403/429)
+    # responses. Runs near the top of the chain so blocks short-circuit
+    # before auth/DB work happens.
+    "shared.middleware.EdgeRateLimitMiddleware",
+    # Enforces Idempotency-Key on state-mutating API calls. Must run after
+    # AuditMiddleware so cache keys can scope on the request_id-derived
+    # correlation surface; runs before DRF auth so anonymous retries also
+    # dedupe.
+    "shared.middleware.IdempotencyKeyMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    # Injects X-Request-ID and captures IP/user-agent for audit events.
-    # See shared/middleware.py
-    "shared.middleware.AuditMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -91,7 +101,7 @@ DATABASES = {
         "NAME": os.environ.get("DBNAME", BASE_DIR / "db.sqlite3"),
         "USER": os.environ.get("DBUSER", ""),
         "PASSWORD": os.environ.get("DBPASSWORD", ""),
-        "HOST": os.environ.get("DBHOST", ""),
+        "HOST": os.environ.get("NBES_DBHOST", os.environ.get("DBHOST", "")),
         "PORT": os.environ.get("DBPORT", ""),
     }
 }
@@ -163,8 +173,12 @@ CORS_ALLOWED_ORIGINS = os.environ.get(
 ).split(",")
 
 # ── Celery ────────────────────────────────────────────────────────────────────
-CELERY_BROKER_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-CELERY_RESULT_BACKEND = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.environ.get(
+    "NBES_REDIS_URL",
+    os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+)
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
@@ -233,6 +247,26 @@ MINIO_BUCKET_NAME = os.environ.get("MINIO_BUCKET_NAME", "nbes-bucket")
 # ── External Systems ──────────────────────────────────────────────────────────
 SYSTEM_17_URL = os.environ.get("SYSTEM_17_URL", "")
 SYSTEM_17_API_KEY = os.environ.get("SYSTEM_17_API_KEY", "")
+# HMAC secret shared with System 17 for signed inter-system calls. Required
+# whenever KAFKA_ENABLED=True (i.e. the outbox actually publishes off-box).
+SYSTEM_17_HMAC_SECRET = os.environ.get("SYSTEM_17_HMAC_SECRET", "")
+SYSTEM_17_TIMEOUT_SECONDS = float(os.environ.get("SYSTEM_17_TIMEOUT_SECONDS", "5"))
+SYSTEM_17_NONCE_WINDOW_SECONDS = int(
+    os.environ.get("SYSTEM_17_NONCE_WINDOW_SECONDS", "300")
+)
+
+# Idempotency cache — 24h default.
+IDEMPOTENCY_CACHE_TTL_SECONDS = int(
+    os.environ.get("IDEMPOTENCY_CACHE_TTL_SECONDS", "86400")
+)
+
+# Edge throttle thresholds — used by shared.middleware.EdgeRateLimitMiddleware.
+# Blueprint §1.2.6 / F000-06.
+EDGE_THROTTLE_THRESHOLD = int(os.environ.get("EDGE_THROTTLE_THRESHOLD", "100"))
+EDGE_BLOCK_THRESHOLD_24H = int(os.environ.get("EDGE_BLOCK_THRESHOLD_24H", "1000"))
+EDGE_SECURITY_EVENT_RETENTION_DAYS = int(
+    os.environ.get("EDGE_SECURITY_EVENT_RETENTION_DAYS", "90")
+)
 SYSTEM_20_WEBHOOK_SECRET = os.environ.get("SYSTEM_20_WEBHOOK_SECRET", "")
 SYSTEM_21_URL = os.environ.get("SYSTEM_21_URL", "")
 SYSTEM_21_API_KEY = os.environ.get("SYSTEM_21_API_KEY", "")

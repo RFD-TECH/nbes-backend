@@ -38,6 +38,7 @@ ENV/
 env/
 
 # IDEs
+.claude/.state/
 .vscode/
 .idea/
 *.swp

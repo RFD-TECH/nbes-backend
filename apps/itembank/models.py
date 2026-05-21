@@ -139,6 +139,7 @@ class ItemVersion(models.Model):
         Item,
         on_delete=models.CASCADE,
         related_name="versions",
+        db_column="item_id",
     )
     version_no = models.IntegerField()
     content = models.TextField()
