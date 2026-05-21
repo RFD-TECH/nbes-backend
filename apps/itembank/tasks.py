@@ -123,6 +123,15 @@ def dispatch_vault_export_alert(self, request_id: str, requester_sub: str, scope
         logger.warning("No vault alert recipients configured; skipping alert for request %s", request_id)
         return False
 
+    if not getattr(settings, "SYSTEM_14_SERVICE_TOKEN", None):
+        raise ImproperlyConfigured(
+            "SYSTEM_14_SERVICE_TOKEN must be set before dispatching vault export alerts to System 14."
+        )
+    if not getattr(settings, "SYSTEM_14_BASE_URL", None):
+        raise ImproperlyConfigured(
+            "SYSTEM_14_BASE_URL must be set before dispatching vault export alerts to System 14."
+        )
+
     idempotency_key = getattr(self.request, "id", None) or f"vault-alert:{request_id}"
     headers = {
         "Content-Type": "application/json",

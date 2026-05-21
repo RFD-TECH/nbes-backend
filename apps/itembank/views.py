@@ -1,10 +1,13 @@
 ﻿"""View sets for item authoring and submission workflows."""
 
+import logging
 from datetime import timedelta
+
+logger = logging.getLogger(__name__)
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import IntegerField, OuterRef, Subquery, Sum, Value
+from django.db.models import IntegerField, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from rest_framework import viewsets, status, filters as drf_filters
@@ -148,6 +151,13 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
     # Enforce Phase 1 RBAC: Only authorized Item Writers can access this
     permission_classes = [has_permission("item:create")]
     serializer_class = ItemDraftSerializer
+
+    def get_permissions(self):
+        # Reviewers, moderators, and secretariat all hold item:search and must
+        # reach transition(); the service layer enforces granular role checks.
+        if self.action == "transition":
+            return [has_permission("item:search")()]
+        return [permission() for permission in self.permission_classes]
 
     def create(self, request):
         """Create a new item draft."""
@@ -484,20 +494,24 @@ class VaultOperationsViewSet(viewsets.GenericViewSet):
                 status_code=status.HTTP_404_NOT_FOUND,
             )
 
-        req = VaultExportRequest.objects.create(
-            scope=serializer.validated_data["scope"],
-            purpose=serializer.validated_data["purpose"],
-            requester_id=requester,
-            status="Pending",
-            expires_at=timezone.now() + timedelta(hours=72),
-        )
-
-        # Immediately alert Chair/DG after the row commits (SRS-NBE-F02-07 / NBE-N01).
-        transaction.on_commit(
-            lambda req_id=str(req.id), sub=str(request.auth["sub"]), sc=req.scope: (
-                dispatch_vault_export_alert.delay(req_id, sub, sc)
+        with transaction.atomic():
+            req = VaultExportRequest.objects.create(
+                scope=serializer.validated_data["scope"],
+                purpose=serializer.validated_data["purpose"],
+                requester_id=requester,
+                status="Pending",
+                expires_at=timezone.now() + timedelta(hours=72),
             )
-        )
+
+            # Immediately alert Chair/DG after the row commits (SRS-NBE-F02-07 / NBE-N01).
+            # Best-effort: broker failures must not roll back or fail the request.
+            def _enqueue_alert(req_id=str(req.id), sub=str(request.auth["sub"]), sc=req.scope):
+                try:
+                    dispatch_vault_export_alert.delay(req_id, sub, sc)
+                except Exception:
+                    logger.exception("Failed to enqueue vault export alert for request %s", req_id)
+
+            transaction.on_commit(_enqueue_alert)
 
         return success_response(
             data={
@@ -991,14 +1005,16 @@ class MetadataSchemaViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="activate")
     def activate(self, request, pk=None):
         """Deactivate all other schemas and activate this one."""
-        try:
-            schema = MetadataSchema.objects.get(id=pk)
-        except ObjectDoesNotExist:
-            return error_response("Schema not found.", status_code=status.HTTP_404_NOT_FOUND)
-
-        MetadataSchema.objects.filter(is_active=True).exclude(id=pk).update(is_active=False)
-        schema.is_active = True
-        schema.save(update_fields=["is_active"])
+        with transaction.atomic():
+            locked = MetadataSchema.objects.select_for_update().filter(
+                Q(id=pk) | Q(is_active=True)
+            )
+            schema = locked.filter(id=pk).first()
+            if schema is None:
+                return error_response("Schema not found.", status_code=status.HTTP_404_NOT_FOUND)
+            locked.exclude(id=pk).update(is_active=False)
+            schema.is_active = True
+            schema.save(update_fields=["is_active"])
 
         AuditEvent.record(
             actor_id=(request.auth or {}).get("sub"),

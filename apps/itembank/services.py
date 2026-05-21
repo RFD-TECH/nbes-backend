@@ -11,7 +11,7 @@ import uuid
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.core.exceptions import ObjectDoesNotExist, PermissionDenied, ValidationError
 from django.core.files import File
 from django.db import models, transaction
 from django.utils import timezone
@@ -274,6 +274,9 @@ def transition_item(
         except ObjectDoesNotExist as exc:
             raise ObjectDoesNotExist("Reviewer user not found.") from exc
 
+        if reviewer.id == item.author_id_id:
+            raise ValueError("Author cannot be assigned as reviewer.")
+
         # COI check: reject if the reviewer has an approved conflict against this
         # item or its author (SRS-NBE-F02-04 "COI-filtered" assignment).
         _assert_no_reviewer_conflict(reviewer, item)
@@ -334,6 +337,9 @@ def create_metadata_schema(data: dict, admin_auth: dict) -> "MetadataSchema":
     """Create a new versioned schema for item metadata controlled vocabulary (SRS-NBE-F02-02)."""
     from .models import MetadataSchema
 
+    if not shared_rbac.has_permission(admin_auth, "schema:manage"):
+        raise PermissionDenied("Metadata schema management requires the schema:manage permission.")
+
     User = get_user_model()
     try:
         admin = User.objects.get(keycloak_sub=admin_auth["sub"])
@@ -391,7 +397,7 @@ def validate_item_against_schema(item, schema) -> list:
         ("source", item.source, vocab.get("sources")),
     ]
     for field, value, allowed in checks:
-        if allowed and value and value not in allowed:
+        if allowed is not None and value and value not in allowed:
             errors.append(
                 f"Tag is not in the controlled vocabulary; submit it for review: {field}={value!r}"
             )
@@ -407,6 +413,9 @@ def bulk_retag_items(item_ids: list, updates: dict, admin_auth: dict) -> dict:
     Only metadata tag fields may be bulk-updated; structural fields such as
     ``status`` are explicitly forbidden.
     """
+    if not shared_rbac.has_permission(admin_auth, "schema:manage"):
+        raise PermissionDenied("Bulk re-tagging requires the schema:manage permission.")
+
     User = get_user_model()
     try:
         User.objects.get(keycloak_sub=admin_auth["sub"])

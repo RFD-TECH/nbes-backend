@@ -484,6 +484,8 @@ class MetadataSchemaSerializer(serializers.ModelSerializer):
     ``create_metadata_schema`` service function.
     """
 
+    _VOCAB_KEYS = ("subjects", "topics", "cognitive_levels", "difficulties", "sources")
+
     activate = serializers.BooleanField(
         write_only=True,
         required=False,
@@ -504,6 +506,21 @@ class MetadataSchemaSerializer(serializers.ModelSerializer):
             "activate",
         ]
         read_only_fields = ["id", "version", "is_active", "created_by", "created_at"]
+
+    def validate_schema_json(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("schema_json must be a JSON object.")
+        missing = [k for k in self._VOCAB_KEYS if k not in value]
+        if missing:
+            raise serializers.ValidationError(
+                f"Missing required vocabulary keys: {missing}."
+            )
+        non_list = [k for k in self._VOCAB_KEYS if not isinstance(value[k], list)]
+        if non_list:
+            raise serializers.ValidationError(
+                {k: "Must be a list." for k in non_list}
+            )
+        return value
 
 
 class BulkRetagSerializer(serializers.Serializer):
