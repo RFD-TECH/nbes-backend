@@ -20,6 +20,7 @@ from .models import (
     VaultExportRequest,
     PanelVote,
     SavedSearch,
+    MetadataSchema,
 )
 
 from .services import create_or_update_item_draft
@@ -440,3 +441,105 @@ class RuleBasedPaperSerializer(serializers.Serializer):
 
     def update(self, instance, validated_data):
         raise NotImplementedError("Update is not supported by this serializer.")
+
+
+class ItemTransitionSerializer(serializers.Serializer):
+    """Validates a peer-review workflow transition request (SRS-NBE-F02-04).
+
+    ``target_state`` must be one of the three states that the generic
+    ``transition_item`` service handles.  ``reviewer_id`` (Keycloak sub) is
+    only required for the Submitted → In Review step.
+    """
+
+    VALID_TARGETS = [
+        Item.Status.IN_REVIEW,
+        Item.Status.REVIEWED,
+        Item.Status.REVISED,
+    ]
+
+    target_state = serializers.ChoiceField(choices=VALID_TARGETS)
+    reviewer_id = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Keycloak sub of the reviewer to assign (required for Submitted → In Review).",
+    )
+    notes = serializers.CharField(
+        required=False, allow_blank=True, max_length=1000
+    )
+
+    def create(self, validated_data):
+        return validated_data
+
+    def update(self, instance, validated_data):
+        raise NotImplementedError(
+            "update() is not implemented for ItemTransitionSerializer"
+        )
+
+
+class MetadataSchemaSerializer(serializers.ModelSerializer):
+    """Serializer for versioned metadata schemas (SRS-NBE-F02-02).
+
+    ``version`` and audit fields are read-only; the ``activate`` flag
+    (write-only, not persisted) is handled by the service layer via the
+    ``create_metadata_schema`` service function.
+    """
+
+    _VOCAB_KEYS = ("subjects", "topics", "cognitive_levels", "difficulties", "sources")
+
+    activate = serializers.BooleanField(
+        write_only=True,
+        required=False,
+        default=False,
+        help_text="Set to true to immediately activate this schema on creation.",
+    )
+
+    class Meta:
+        model = MetadataSchema
+        fields = [
+            "id",
+            "version",
+            "schema_json",
+            "is_active",
+            "notes",
+            "created_by",
+            "created_at",
+            "activate",
+        ]
+        read_only_fields = ["id", "version", "is_active", "created_by", "created_at"]
+
+    def validate_schema_json(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("schema_json must be a JSON object.")
+        missing = [k for k in self._VOCAB_KEYS if k not in value]
+        if missing:
+            raise serializers.ValidationError(
+                f"Missing required vocabulary keys: {missing}."
+            )
+        non_list = [k for k in self._VOCAB_KEYS if not isinstance(value[k], list)]
+        if non_list:
+            raise serializers.ValidationError(
+                {k: "Must be a list." for k in non_list}
+            )
+        return value
+
+
+class BulkRetagSerializer(serializers.Serializer):
+    """Validates a bulk re-tagging request for Administrator approval (SRS-NBE-F02-02)."""
+
+    item_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        allow_empty=False,
+        help_text="UUIDs of items to re-tag.",
+    )
+    updates = serializers.DictField(
+        child=serializers.CharField(),
+        help_text="Mapping of metadata field name to new value.",
+    )
+
+    def create(self, validated_data):
+        return validated_data
+
+    def update(self, instance, validated_data):
+        raise NotImplementedError(
+            "update() is not implemented for BulkRetagSerializer"
+        )

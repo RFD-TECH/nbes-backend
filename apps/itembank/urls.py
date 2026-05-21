@@ -16,6 +16,7 @@ from .views import (
     AssetViewSet,
     ItemAuthoringViewSet,
     ItemSearchViewSet,
+    MetadataSchemaViewSet,
     PaperViewSet,
     SavedSearchViewSet,
     VaultOperationsViewSet,
@@ -35,6 +36,7 @@ router.register(r"saved-searches", SavedSearchViewSet, basename="saved-search")
 router.register(r"papers", PaperViewSet, basename="paper")
 router.register(r"assets", AssetViewSet, basename="asset")
 router.register(r"vault", VaultOperationsViewSet, basename="vault")
+router.register(r"metadata-schemas", MetadataSchemaViewSet, basename="metadata-schema")
 
 # URL patterns for the itembank app. Including `router.urls` injects all
 # automatically generated routes from the DefaultRouter into the project's
