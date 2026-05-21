@@ -18,8 +18,6 @@ from django.utils import timezone
 from django.conf import settings
 from shared.storage import get_storage_backend
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Dict, List, Tuple
-import operator
 from collections import defaultdict
 
 from .tasks import dispatch_item_status_notification
@@ -841,9 +839,7 @@ def _validate_sections(items, *, sections: list, blueprint_ref: str) -> None:
             raise ValueError(f"Section {idx} contains no items.")
         for item_id in section_item_ids:
             if item_id in seen:
-                raise ValueError(
-                    f"Item {item_id} appears in more than one section."
-                )
+                raise ValueError(f"Item {item_id} appears in more than one section.")
             if item_id not in items_by_id:
                 raise ValueError(
                     f"Section {idx} references item {item_id} which is not in the paper."
@@ -905,9 +901,7 @@ def create_manual_paper(data: dict, user, request=None) -> Paper:
     if len(set(str(i) for i in item_ids)) != len(item_ids):
         raise ValueError("Duplicate item_ids in payload.")
 
-    items_qs = Item.objects.filter(
-        id__in=item_ids, status=Item.Status.LOCKED_FOR_USE
-    )
+    items_qs = Item.objects.filter(id__in=item_ids, status=Item.Status.LOCKED_FOR_USE)
     items_by_id = {str(item.id): item for item in items_qs}
     if len(items_by_id) != len(item_ids):
         missing = [str(i) for i in item_ids if str(i) not in items_by_id]
@@ -937,9 +931,7 @@ def create_manual_paper(data: dict, user, request=None) -> Paper:
     recent = _recent_sittings(cool_down, exclude=sitting_ref)
     if recent:
         for item in items:
-            if ItemUsage.objects.filter(
-                item_id=item, sitting_ref__in=recent
-            ).exists():
+            if ItemUsage.objects.filter(item_id=item, sitting_ref__in=recent).exists():
                 raise ValueError(
                     f"Item {item.id} has been used within the cool-down window."
                 )
@@ -976,6 +968,7 @@ def create_manual_paper(data: dict, user, request=None) -> Paper:
     return paper
 
 
+@transaction.atomic
 def submit_paper_for_approval(paper_id: str, user) -> Paper:
     """Transition a constructed paper into NBEC approval (SRS-NBE-F02-08).
 
@@ -984,9 +977,7 @@ def submit_paper_for_approval(paper_id: str, user) -> Paper:
     """
     paper = Paper.objects.select_for_update().get(id=paper_id)
     if paper.status not in (Paper.Status.CONSTRUCTED, Paper.Status.DRAFT):
-        raise ValueError(
-            f"Cannot submit paper in state {paper.status} for approval."
-        )
+        raise ValueError(f"Cannot submit paper in state {paper.status} for approval.")
     previous = paper.status
     paper.status = Paper.Status.READY_FOR_APPROVAL
     paper.save(update_fields=["status", "updated_at"])
@@ -1015,9 +1006,7 @@ def log_vault_reads(items, *, user, kind: str = "read", request=None) -> None:
     ip = None
     if request is not None:
         session_id = getattr(request, "request_id", None)
-        ip = getattr(request, "ip_address", None) or request.META.get(
-            "REMOTE_ADDR"
-        )
+        ip = getattr(request, "ip_address", None) or request.META.get("REMOTE_ADDR")
     action = "VAULT_EXPORTED" if kind == "export" else "VAULT_READ"
     for item in items:
         item_instance = item if isinstance(item, Item) else None
@@ -1062,46 +1051,84 @@ def _select_items_for_constraints(
             continue
         if not item.difficulty or not item.topic or item.marks is None:
             continue
-        if item.topic in topic_dist:
+        if item.difficulty in diff_dist and item.topic in topic_dist:
             buckets[(item.difficulty, item.topic)].append(item)
 
-    required_marks_per_bucket: dict = {}
-    for diff, diff_pct in diff_dist.items():
-        for topic, topic_pct in topic_dist.items():
-            marks = (
-                total_marks
-                * Decimal(str(diff_pct))
-                / Decimal("100")
-                * Decimal(str(topic_pct))
-                / Decimal("100")
-            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            if marks > 0:
-                required_marks_per_bucket[(diff, topic)] = marks
+    for bucket_items in buckets.values():
+        bucket_items.sort(key=lambda x: x.marks or 0, reverse=True)
+
+    required_marks_per_difficulty: dict = {
+        diff: (total_marks * Decimal(str(diff_pct)) / Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        for diff, diff_pct in diff_dist.items()
+    }
+    required_marks_per_topic: dict = {
+        topic: (total_marks * Decimal(str(topic_pct)) / Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        for topic, topic_pct in topic_dist.items()
+    }
 
     selected: list = []
     selected_marks = Decimal("0")
     errors: list[str] = []
-    for (diff, topic), required in required_marks_per_bucket.items():
-        available = sorted(
-            buckets.get((diff, topic), []),
-            key=lambda x: (x.marks or 0),
-            reverse=True,
+
+    while True:
+        best_bucket = None
+        best_score = Decimal("0")
+        for (diff, topic), available in buckets.items():
+            if not available:
+                continue
+            score = required_marks_per_difficulty.get(
+                diff, Decimal("0")
+            ) + required_marks_per_topic.get(topic, Decimal("0"))
+            if score > best_score:
+                best_score = score
+                best_bucket = (diff, topic)
+
+        if best_bucket is None or best_score <= 0:
+            break
+
+        diff, topic = best_bucket
+        item = buckets[(diff, topic)].pop(0)
+        item_marks = Decimal(str(item.marks))
+        selected.append(item)
+        selected_marks += item_marks
+        required_marks_per_difficulty[diff] = max(
+            Decimal("0"),
+            required_marks_per_difficulty.get(diff, Decimal("0")) - item_marks,
         )
-        current = Decimal("0")
-        bucket_items: list = []
-        for item in available:
-            if current >= required:
-                break
-            bucket_items.append(item)
-            current += Decimal(str(item.marks))
-        if current < required:
+        required_marks_per_topic[topic] = max(
+            Decimal("0"),
+            required_marks_per_topic.get(topic, Decimal("0")) - item_marks,
+        )
+
+    target_marks_per_difficulty = {
+        diff: (total_marks * Decimal(str(diff_pct)) / Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        for diff, diff_pct in diff_dist.items()
+    }
+    target_marks_per_topic = {
+        topic: (total_marks * Decimal(str(topic_pct)) / Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        for topic, topic_pct in topic_dist.items()
+    }
+
+    for diff, remaining in required_marks_per_difficulty.items():
+        if remaining > 0:
             errors.append(
-                f"Topic coverage does not satisfy the blueprint constraints: "
-                f"Topic {topic} ({diff}) under-represented vs blueprint "
-                f"(required {required}, got {current})."
+                f"Difficulty {diff} remains under-represented vs blueprint "
+                f"(required {target_marks_per_difficulty[diff]}, got {target_marks_per_difficulty[diff] - remaining})."
             )
-        selected.extend(bucket_items)
-        selected_marks += current
+    for topic, remaining in required_marks_per_topic.items():
+        if remaining > 0:
+            errors.append(
+                f"Topic {topic} remains under-represented vs blueprint "
+                f"(required {target_marks_per_topic[topic]}, got {target_marks_per_topic[topic] - remaining})."
+            )
     return selected, selected_marks, errors
 
 
@@ -1133,9 +1160,9 @@ def generate_paper_rule_based(data: dict, user, request=None) -> Paper:
 
     cooled_ids = get_cooled_down_items(sitting_ref)
     pool = list(
-        Item.objects.filter(
-            subject=subject, status=Item.Status.LOCKED_FOR_USE
-        ).exclude(id__in=cooled_ids)
+        Item.objects.filter(subject=subject, status=Item.Status.LOCKED_FOR_USE).exclude(
+            id__in=cooled_ids
+        )
     )
 
     primary, primary_marks, primary_errors = _select_items_for_constraints(
@@ -1148,6 +1175,7 @@ def generate_paper_rule_based(data: dict, user, request=None) -> Paper:
         )
 
     _validate_blueprint(primary, blueprint_ref=blueprint_ref, total_marks=total_marks)
+    _validate_time_allocation(primary, time_limit=time_limit)
 
     tolerance = _marks_tolerance()
     if abs(primary_marks - total_marks) > tolerance:
@@ -1172,6 +1200,10 @@ def generate_paper_rule_based(data: dict, user, request=None) -> Paper:
                 f"Variant {variant_no} marks {variant_marks} deviate from "
                 f"target {total_marks} by more than tolerance {tolerance}."
             )
+        _validate_blueprint(
+            variant_items, blueprint_ref=blueprint_ref, total_marks=total_marks
+        )
+        _validate_time_allocation(variant_items, time_limit=time_limit)
         variant_payloads.append(
             {
                 "variant_no": variant_no,
@@ -1292,6 +1324,7 @@ def _render_paper_payload(paper: Paper) -> tuple:
         records.append(
             {
                 "position": idx,
+                "question_number": idx,
                 "id": str(item.id),
                 "item_type": item.item_type,
                 "subject": item.subject,
@@ -1317,7 +1350,7 @@ def export_paper_pdf(paper: Paper) -> bytes:
     from django.template.loader import render_to_string
     from weasyprint import HTML  # local import — heavyweight dependency
 
-    items, records = _render_paper_payload(paper)
+    _, records = _render_paper_payload(paper)
     record_by_id = {r["id"]: r for r in records}
 
     sections_ctx: list = []
@@ -1360,7 +1393,7 @@ def export_paper_docx(paper: Paper) -> bytes:
             "python-docx must be installed to export papers in Word format."
         ) from exc
 
-    items, records = _render_paper_payload(paper)
+    _, records = _render_paper_payload(paper)
     document = Document()
     document.add_heading(f"{paper.subject}", level=0)
     document.add_paragraph(f"Sitting: {paper.sitting_ref}")

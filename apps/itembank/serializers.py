@@ -314,9 +314,9 @@ class ItemListSerializer(serializers.ModelSerializer):
 
     def _latest_usage(self, obj):
         if "_latest_usage_cache" not in getattr(obj, "__dict__", {}):
-            obj.__dict__["_latest_usage_cache"] = (
-                obj.usage_history.order_by("-recorded_at").first()
-            )
+            obj.__dict__["_latest_usage_cache"] = obj.usage_history.order_by(
+                "-recorded_at"
+            ).first()
         return obj.__dict__["_latest_usage_cache"]
 
     def get_usage_count(self, obj) -> int:
@@ -324,7 +324,11 @@ class ItemListSerializer(serializers.ModelSerializer):
 
     def get_latest_facility_index(self, obj):
         usage = self._latest_usage(obj)
-        return str(usage.facility_index) if usage and usage.facility_index is not None else None
+        return (
+            str(usage.facility_index)
+            if usage and usage.facility_index is not None
+            else None
+        )
 
     def get_latest_discrimination_index(self, obj):
         usage = self._latest_usage(obj)
@@ -362,13 +366,17 @@ class PaperSectionSerializer(serializers.Serializer):
     """Inline serializer for a single paper section (SRS-NBE-F02-08)."""
 
     name = serializers.CharField(max_length=100)
-    item_ids = serializers.ListField(
-        child=serializers.UUIDField(), allow_empty=False
-    )
-    marks = serializers.DecimalField(
-        max_digits=6, decimal_places=2, required=False
-    )
+    item_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=False)
+    marks = serializers.DecimalField(max_digits=6, decimal_places=2, required=False)
     time = serializers.IntegerField(required=False, min_value=1)
+
+    def create(self, validated_data):
+        return validated_data
+
+    def update(self, instance, validated_data):
+        raise NotImplementedError(
+            "update() is not implemented for PaperSectionSerializer"
+        )
 
 
 class ManualPaperSerializer(serializers.Serializer):
@@ -379,9 +387,7 @@ class ManualPaperSerializer(serializers.Serializer):
     mode = serializers.CharField(max_length=50)
     total_marks = serializers.DecimalField(max_digits=6, decimal_places=2)
     time_limit = serializers.IntegerField(min_value=1)
-    item_ids = serializers.ListField(
-        child=serializers.UUIDField(), allow_empty=False
-    )
+    item_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=False)
     sections = serializers.ListField(
         child=PaperSectionSerializer(), required=False, allow_empty=True
     )

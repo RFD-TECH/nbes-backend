@@ -12,6 +12,7 @@ and vault access/export auditing.
 import uuid
 from django.db import models
 from django.conf import settings
+from django.core.validators import MinValueValidator
 from django.utils.translation import gettext_lazy as _
 
 
@@ -82,7 +83,9 @@ class Item(models.Model):
     subject = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     topic = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     difficulty = models.CharField(max_length=50, null=True, blank=True, db_index=True)
-    cognitive_level = models.CharField(max_length=50, null=True, blank=True, db_index=True)
+    cognitive_level = models.CharField(
+        max_length=50, null=True, blank=True, db_index=True
+    )
     marks = models.DecimalField(
         max_digits=5,
         decimal_places=2,
@@ -405,6 +408,7 @@ class ItemUsage(models.Model):
     count = models.IntegerField(default=1)
     candidate_count = models.IntegerField(
         default=0,
+        validators=[MinValueValidator(0)],
         help_text="Number of candidates who saw this item in the referenced sitting.",
     )
     facility_index = models.DecimalField(
@@ -421,10 +425,22 @@ class ItemUsage(models.Model):
     )
     recorded_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(candidate_count__gte=0),
+                name="itemusage_candidate_count_non_negative",
+            )
+        ]
+
 
 class SavedSearch(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='saved_searches')
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="saved_searches",
+    )
     name = models.CharField(max_length=255)
     query = models.JSONField()  # stores the filter params
     shared_with_secretariat = models.BooleanField(default=False)
