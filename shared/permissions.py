@@ -18,24 +18,35 @@ from shared import rbac
 
 
 def _record_denial(request, codename: str) -> None:
-    """Emit the 403 audit event. Imported lazily so this module stays usable
-    during migrations and management commands where apps aren't loaded yet."""
+    """Emit a 403 audit + security event. Imported lazily so this module
+    stays usable during migrations and management commands where apps
+    aren't loaded yet."""
     from apps.audit.models import AuditEvent
+    from shared.secops import record_security_event
 
     payload = request.auth or {}
     actor_id = payload.get("sub") or None
+    roles = rbac.get_nbes_role_names(payload)
+    indicators = {
+        "permission": codename,
+        "roles": roles,
+        "path": request.path,
+        "method": request.method,
+    }
     AuditEvent.record(
         actor_id=actor_id,
         action="AUTHZ_DENIED",
         entity_type="permission",
-        new_state={
-            "permission": codename,
-            "roles": rbac.get_nbes_role_names(payload),
-            "path": request.path,
-            "method": request.method,
-        },
+        new_state=indicators,
         ip_address=getattr(request, "ip_address", None),
         request_id=getattr(request, "request_id", None),
+    )
+    record_security_event(
+        category="authz_denied",
+        ip_address=getattr(request, "ip_address", None),
+        actor_id=actor_id,
+        request_id=getattr(request, "request_id", None),
+        indicators=indicators,
     )
 
 

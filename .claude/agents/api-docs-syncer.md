@@ -16,9 +16,10 @@ You do not touch business logic. You do not change permission classes. If you se
 
 ## 1. Identify what changed
 Run `git diff --name-only main...HEAD` and `git diff --name-only main` (covers committed + uncommitted). Filter to:
-- `apps/**/views.py`
-- `apps/**/urls.py`
-- `apps/**/serializers.py`
+- `apps/**/views.py` (and any prefixed variant, e.g. `secops_views.py`)
+- `apps/**/urls.py` (and any prefixed variant, e.g. `secops_urls.py`)
+- `apps/**/serializers.py` (and any prefixed variant)
+- `apps/**/filters.py` (and any prefixed variant)
 - `config/urls.py`
 
 If the diff is empty, exit early with `No API surface changes detected.` and stop. Do not edit anything.
@@ -32,11 +33,21 @@ For each affected app:
 Cross-reference against `config/urls.py` to learn the full path prefix (e.g. `/api/v1/admin/rbac/`).
 
 ## 3. Update the Postman collection
-- One collection per top-level URL prefix (e.g. `nbes-rbac.postman_collection.json` covers `/api/v1/admin/rbac/` + `/api/v1/me/`). Create a new `<prefix>.postman_collection.json` for any prefix that doesn't yet have one.
+- One collection per top-level URL prefix. Existing prefixes already covered:
+
+  | Prefix                | Collection file                                   |
+  |-----------------------|---------------------------------------------------|
+  | `/api/v1/admin/rbac/`, `/api/v1/me/` | `docs/nbes-rbac.postman_collection.json` |
+  | `/api/v1/audit/`      | `docs/nbes-audit.postman_collection.json` *(create if missing)* |
+  | `/api/v1/secops/`     | `docs/nbes-secops.postman_collection.json` *(create if missing)* |
+  | `/api/v1/dashboard/`  | `docs/nbes-dashboards.postman_collection.json` *(create if missing)* |
+
+  For any new prefix not in the table, create `<prefix>.postman_collection.json` and add it to the table when reporting.
 - For every new endpoint: add a request item with method, URL, headers, body, and at least one example response (success). For destructive ops include a 403 example too.
 - For modified endpoints: update the body / response example only — preserve any existing test scripts and folder structure.
-- Use Postman v2.1 schema. Always validate the file parses as JSON before reporting done.
-- Collection variables: `{{base_url}}`, `{{admin_token}}`, `{{writer_token}}`, and any id-chaining variables. Don't hardcode UUIDs in URLs.
+- Use Postman v2.1 schema. Always validate the file parses as JSON before reporting done (`python3 -c "import json; json.load(open('docs/<name>.postman_collection.json'))"`).
+- Collection variables: `{{base_url}}`, `{{auditor_token}}`, `{{security_officer_token}}`, `{{admin_token}}`, and any id-chaining variables. Don't hardcode UUIDs in URLs.
+- Idempotency-Key: every `POST`/`PUT`/`PATCH`/`DELETE` request needs an `Idempotency-Key` header — use `{{$randomUUID}}` per request. `IdempotencyKeyMiddleware` rejects mutating verbs without it.
 
 ## 4. Update drf-spectacular schema
 - Each view that returns a non-trivial response needs `@extend_schema(responses=...)`. For list endpoints, document the success envelope shape.
