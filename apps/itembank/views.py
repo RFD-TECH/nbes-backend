@@ -3,9 +3,10 @@
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
-from django.http import HttpResponse
+from django.db import transaction
 from django.db.models import IntegerField, OuterRef, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
+from django.http import HttpResponse
 from rest_framework import viewsets, status, filters as drf_filters
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser
@@ -25,22 +26,29 @@ from drf_spectacular.utils import (
 )
 
 from .filters import ItemFilter
-from .models import Item, ItemUsage, ItemVersion, Paper, SavedSearch, VaultExportRequest
+from .models import Item, ItemUsage, ItemVersion, MetadataSchema, Paper, SavedSearch, VaultExportRequest
 from .serializers import (
+    BulkRetagSerializer,
     ItemDraftSerializer,
     ItemListSerializer,
+    ItemTransitionSerializer,
     ItemVersionSerializer,
     ItemCommentSerializer,
     ManualPaperSerializer,
+    MetadataSchemaSerializer,
     RuleBasedPaperSerializer,
     SavedSearchSerializer,
     SuggestionDecisionSerializer,
     VaultExportSerializer,
     PanelVoteSerializer,
 )
+from .tasks import dispatch_vault_export_alert
 from .services import (
+    bulk_retag_items,
+    create_metadata_schema,
     create_or_update_item_draft,
     create_manual_paper,
+    get_active_schema,
     submit_item_for_review,
     submit_paper_for_approval,
     restore_item_version,
@@ -52,6 +60,7 @@ from .services import (
     export_paper_pdf,
     generate_paper_rule_based,
     record_paper_export,
+    transition_item,
 )
 from apps.audit.models import AuditEvent
 from shared import rbac as shared_rbac
@@ -368,6 +377,38 @@ class ItemAuthoringViewSet(viewsets.GenericViewSet):
                 str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
             )
 
+    @action(detail=True, methods=["post"])
+    def transition(self, request, pk=None):
+        """Generic workflow transition (Submitted→In Review, In Review→Reviewed, Reviewed→Revised).
+
+        Implements SRS-NBE-F02-04 peer-review workflow transitions. Role and
+        ownership checks are enforced by the service layer; the view simply
+        validates the request shape and maps exceptions to HTTP responses.
+        """
+        serializer = ItemTransitionSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                "Invalid transition data",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            item = transition_item(
+                item_id=pk,
+                target_state=serializer.validated_data["target_state"],
+                actor_auth=request.auth,
+                reviewer_id=serializer.validated_data.get("reviewer_id"),
+                notes=serializer.validated_data.get("notes"),
+            )
+            return success_response(
+                data={"item_id": str(item.id), "status": item.status},
+                message="Workflow transition applied.",
+            )
+        except ObjectDoesNotExist:
+            return error_response("Item or user not found.", status_code=status.HTTP_404_NOT_FOUND)
+        except ValueError as e:
+            return error_response(str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
 
 class AssetViewSet(viewsets.GenericViewSet):
     """Expose asset upload endpoint for item authoring workflows."""
@@ -449,6 +490,13 @@ class VaultOperationsViewSet(viewsets.GenericViewSet):
             requester_id=requester,
             status="Pending",
             expires_at=timezone.now() + timedelta(hours=72),
+        )
+
+        # Immediately alert Chair/DG after the row commits (SRS-NBE-F02-07 / NBE-N01).
+        transaction.on_commit(
+            lambda req_id=str(req.id), sub=str(request.auth["sub"]), sc=req.scope: (
+                dispatch_vault_export_alert.delay(req_id, sub, sc)
+            )
         )
 
         return success_response(
@@ -899,4 +947,108 @@ class SavedSearchViewSet(viewsets.ModelViewSet):
         return success_response(
             data={"count": len(data), "results": data},
             message="Saved search executed.",
+        )
+
+
+class MetadataSchemaViewSet(viewsets.ModelViewSet):
+    """Admin-only: manage versioned metadata schemas (SRS-NBE-F02-02).
+
+    Provides full CRUD for MetadataSchema records. Schema versions are
+    auto-incremented by the service layer; only one schema may be active at
+    a time. Bulk re-tagging of items requires Administrator approval and
+    produces a per-item audit entry.
+    """
+
+    permission_classes = [has_permission("schema:manage")]
+    serializer_class = MetadataSchemaSerializer
+    queryset = MetadataSchema.objects.all().order_by("-version")
+
+    def create(self, request, *args, **kwargs):
+        """Create a new versioned metadata schema."""
+        serializer = MetadataSchemaSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                "Invalid schema data",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            schema = create_metadata_schema(
+                serializer.validated_data, admin_auth=request.auth
+            )
+            return success_response(
+                data=MetadataSchemaSerializer(schema).data,
+                message="Metadata schema created.",
+                status_code=status.HTTP_201_CREATED,
+            )
+        except ObjectDoesNotExist:
+            return error_response(
+                "Admin user not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+        except ValueError as e:
+            return error_response(str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+    @action(detail=True, methods=["post"], url_path="activate")
+    def activate(self, request, pk=None):
+        """Deactivate all other schemas and activate this one."""
+        try:
+            schema = MetadataSchema.objects.get(id=pk)
+        except ObjectDoesNotExist:
+            return error_response("Schema not found.", status_code=status.HTTP_404_NOT_FOUND)
+
+        MetadataSchema.objects.filter(is_active=True).exclude(id=pk).update(is_active=False)
+        schema.is_active = True
+        schema.save(update_fields=["is_active"])
+
+        AuditEvent.record(
+            actor_id=(request.auth or {}).get("sub"),
+            action="METADATA_SCHEMA_ACTIVATED",
+            entity_type="metadata_schema",
+            entity_id=str(schema.id),
+            new_state={"version": schema.version, "is_active": True},
+        )
+        return success_response(
+            data=MetadataSchemaSerializer(schema).data,
+            message=f"Metadata schema v{schema.version} is now active.",
+        )
+
+    @action(detail=False, methods=["post"], url_path="bulk-retag")
+    def bulk_retag(self, request):
+        """Bulk re-tag items with Administrator approval (SRS-NBE-F02-02)."""
+        serializer = BulkRetagSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                "Invalid bulk retag data",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            result = bulk_retag_items(
+                item_ids=serializer.validated_data["item_ids"],
+                updates=serializer.validated_data["updates"],
+                admin_auth=request.auth,
+            )
+            return success_response(
+                data=result,
+                message=f"{result['retagged_count']} item(s) re-tagged successfully.",
+            )
+        except ObjectDoesNotExist:
+            return error_response(
+                "Admin user not found.", status_code=status.HTTP_404_NOT_FOUND
+            )
+        except ValueError as e:
+            return error_response(str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+    @action(detail=False, methods=["get"], url_path="active")
+    def active_schema(self, request):
+        """Return the currently active metadata schema."""
+        schema = get_active_schema()
+        if schema is None:
+            return success_response(
+                data=None,
+                message="No active metadata schema configured.",
+            )
+        return success_response(
+            data=MetadataSchemaSerializer(schema).data,
+            message="Active metadata schema retrieved.",
         )

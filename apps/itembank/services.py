@@ -35,6 +35,7 @@ from .models import (
 )
 from apps.audit.models import AuditEvent
 from workflow.guards import has_mandatory_metadata
+from shared import rbac as shared_rbac
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,9 @@ def create_or_update_item_draft(
         item.save()
 
     # Capture a metadata snapshot for the version record.
+    # Include the active schema version so existing items remain valid
+    # against the schema they were authored under (SRS-NBE-F02-02).
+    active_schema = get_active_schema()
     metadata_snapshot = {
         "subject": item.subject,
         "topic": item.topic,
@@ -118,6 +122,7 @@ def create_or_update_item_draft(
         "time": item.time,
         "source": item.source,
         "blueprint_ref": item.blueprint_ref,
+        "schema_version": active_schema.version if active_schema else None,
     }
 
     # For new items, default asset_refs to empty list if none provided.
@@ -177,17 +182,24 @@ def submit_item_for_review(item_id: str, author_auth: dict) -> Item:
 
     old_status = item.status
 
-    # Transition the item into the submitted state.
-    item.status = Item.Status.SUBMITTED
+    # SRS-NBE-F02-04: Draft → Submitted; Revised → Moderation Panel.
+    if item.status == Item.Status.DRAFT:
+        target_status = Item.Status.SUBMITTED
+        justification = "Item submitted for peer review"
+    else:  # Item.Status.REVISED
+        target_status = Item.Status.MODERATION_PANEL
+        justification = "Revised item submitted to moderation panel"
+
+    item.status = target_status
     item.save(update_fields=["status"])
 
     # Record the workflow transition for history tracking.
     ItemTransition.objects.create(
         item_id=item,
         from_state=old_status,
-        to_state=Item.Status.SUBMITTED,
+        to_state=target_status,
         actor_id=author_user,
-        justification="Item submitted for peer review",
+        justification=justification,
     )
 
     # Record the system audit event.
@@ -197,10 +209,234 @@ def submit_item_for_review(item_id: str, author_auth: dict) -> Item:
         entity_type="item",
         entity_id=str(item.id),
         old_state={"status": old_status},
-        new_state={"status": Item.Status.SUBMITTED},
+        new_state={"status": target_status},
     )
 
     return item
+
+
+@transaction.atomic
+def transition_item(
+    item_id: str,
+    target_state: str,
+    actor_auth: dict,
+    reviewer_id: str = None,
+    notes: str = None,
+) -> Item:
+    """Generic item state machine transition service (SRS-NBE-F02-04).
+
+    Supported transitions:
+      Submitted → In Review:    actor must have secretariat/admin role; reviewer_id required
+      In Review → Reviewed:     actor must be the assigned reviewer (or secretariat/admin)
+      Reviewed → Revised:       actor must be the item author
+
+    All transitions are RBAC-validated, audit-logged, and recorded in ItemTransition.
+    """
+    User = get_user_model()
+    try:
+        actor = User.objects.get(keycloak_sub=actor_auth["sub"])
+    except ObjectDoesNotExist as exc:
+        raise ObjectDoesNotExist("Actor user not found for provided auth sub") from exc
+
+    item = Item.objects.select_for_update().get(id=item_id)
+
+    VALID_TRANSITIONS = {
+        (Item.Status.SUBMITTED, Item.Status.IN_REVIEW),
+        (Item.Status.IN_REVIEW, Item.Status.REVIEWED),
+        (Item.Status.REVIEWED, Item.Status.REVISED),
+    }
+
+    current = item.status
+    if (current, target_state) not in VALID_TRANSITIONS:
+        raise ValueError(
+            f"Invalid workflow transition: {current} → {target_state}. "
+            "This workflow transition is not permitted from the current state."
+        )
+
+    # Role/ownership checks per transition.
+    role_names = set(shared_rbac.get_nbes_role_names(actor_auth))
+
+    if current == Item.Status.SUBMITTED and target_state == Item.Status.IN_REVIEW:
+        if (
+            "nbec_secretariat" not in role_names
+            and "administrator" not in role_names
+            and "super_admin" not in role_names
+        ):
+            raise ValueError(
+                "Only NBEC Secretariat or Administrators can assign reviewers."
+            )
+        if not reviewer_id:
+            raise ValueError(
+                "reviewer_id is required for Submitted → In Review transition."
+            )
+        try:
+            reviewer = User.objects.get(keycloak_sub=reviewer_id)
+        except ObjectDoesNotExist as exc:
+            raise ObjectDoesNotExist("Reviewer user not found.") from exc
+
+        # COI check: reject if the reviewer has an approved conflict against this
+        # item or its author (SRS-NBE-F02-04 "COI-filtered" assignment).
+        _assert_no_reviewer_conflict(reviewer, item)
+
+        item.assigned_reviewer_id = reviewer
+        item.save(update_fields=["assigned_reviewer_id"])
+
+    elif current == Item.Status.IN_REVIEW and target_state == Item.Status.REVIEWED:
+        if item.assigned_reviewer_id_id != actor.id:
+            # Also allow secretariat/admin to override.
+            if (
+                "nbec_secretariat" not in role_names
+                and "administrator" not in role_names
+                and "super_admin" not in role_names
+            ):
+                raise ValueError(
+                    "Only the assigned reviewer can mark this item as Reviewed."
+                )
+
+    elif current == Item.Status.REVIEWED and target_state == Item.Status.REVISED:
+        if item.author_id_id != actor.id:
+            raise ValueError("Only the item author can begin revision.")
+
+    old_status = item.status
+    item.status = target_state
+    item.save(update_fields=["status"])
+
+    ItemTransition.objects.create(
+        item_id=item,
+        from_state=old_status,
+        to_state=target_state,
+        actor_id=actor,
+        justification=notes or f"Workflow transition: {old_status} → {target_state}",
+    )
+
+    AuditEvent.record(
+        actor_id=actor_auth["sub"],
+        action="ITEM_WORKFLOW_TRANSITION",
+        entity_type="item",
+        entity_id=str(item.id),
+        old_state={"status": old_status},
+        new_state={"status": target_state},
+    )
+
+    # Notify the author on transitions they care about.
+    if target_state in (Item.Status.IN_REVIEW, Item.Status.REVIEWED):
+        transaction.on_commit(
+            lambda item_id=str(item.id), author_id=str(item.author_id_id), state=target_state: (
+                dispatch_item_status_notification.delay(item_id, author_id, state)
+            )
+        )
+
+    return item
+
+
+@transaction.atomic
+def create_metadata_schema(data: dict, admin_auth: dict) -> "MetadataSchema":
+    """Create a new versioned schema for item metadata controlled vocabulary (SRS-NBE-F02-02)."""
+    from .models import MetadataSchema
+
+    User = get_user_model()
+    try:
+        admin = User.objects.get(keycloak_sub=admin_auth["sub"])
+    except ObjectDoesNotExist as exc:
+        raise ObjectDoesNotExist("Admin user not found for provided auth sub") from exc
+
+    last = MetadataSchema.objects.order_by("-version").first()
+    version = (last.version + 1) if last else 1
+
+    activate = data.get("activate", False)
+    if activate:
+        MetadataSchema.objects.filter(is_active=True).update(is_active=False)
+
+    schema = MetadataSchema.objects.create(
+        version=version,
+        schema_json=data["schema_json"],
+        is_active=activate,
+        notes=data.get("notes", ""),
+        created_by=admin,
+    )
+
+    AuditEvent.record(
+        actor_id=admin_auth["sub"],
+        action="METADATA_SCHEMA_CREATED",
+        entity_type="metadata_schema",
+        entity_id=str(schema.id),
+        new_state={"version": version, "is_active": activate},
+    )
+    return schema
+
+
+def get_active_schema():
+    """Return the currently active MetadataSchema, or None."""
+    from .models import MetadataSchema
+
+    return MetadataSchema.objects.filter(is_active=True).first()
+
+
+def validate_item_against_schema(item, schema) -> list:
+    """Validate item metadata against the active schema. Returns list of violations.
+
+    Per SRS-NBE-F02-02 the controlled vocabulary covers subjects, topics,
+    cognitive levels, difficulties, and sources. Unknown values produce the
+    canonical error message: "Tag is not in the controlled vocabulary; submit it for review".
+    """
+    if schema is None:
+        return []
+    vocab = schema.schema_json or {}
+    errors = []
+    checks = [
+        ("subject", item.subject, vocab.get("subjects")),
+        ("topic", item.topic, vocab.get("topics")),
+        ("difficulty", item.difficulty, vocab.get("difficulties")),
+        ("cognitive_level", item.cognitive_level, vocab.get("cognitive_levels")),
+        ("source", item.source, vocab.get("sources")),
+    ]
+    for field, value, allowed in checks:
+        if allowed and value and value not in allowed:
+            errors.append(
+                f"Tag is not in the controlled vocabulary; submit it for review: {field}={value!r}"
+            )
+    return errors
+
+
+@transaction.atomic
+def bulk_retag_items(item_ids: list, updates: dict, admin_auth: dict) -> dict:
+    """Bulk re-tag items with administrator approval. Produces audit entries.
+
+    ``updates`` is a dict of field → value, e.g.
+    ``{"difficulty": "Hard", "topic": "Contract Law"}``.
+    Only metadata tag fields may be bulk-updated; structural fields such as
+    ``status`` are explicitly forbidden.
+    """
+    User = get_user_model()
+    try:
+        User.objects.get(keycloak_sub=admin_auth["sub"])
+    except ObjectDoesNotExist as exc:
+        raise ObjectDoesNotExist("Admin user not found for provided auth sub") from exc
+
+    allowed_fields = {"subject", "topic", "difficulty", "cognitive_level", "source", "blueprint_ref"}
+    invalid = set(updates.keys()) - allowed_fields
+    if invalid:
+        raise ValueError(f"Cannot bulk-update fields: {invalid}")
+
+    items = list(Item.objects.filter(id__in=item_ids))
+    if not items:
+        raise ValueError("No matching items found.")
+
+    for item in items:
+        old_state = {f: getattr(item, f) for f in updates}
+        for field, value in updates.items():
+            setattr(item, field, value)
+        item.save(update_fields=list(updates.keys()) + ["updated_at"])
+        AuditEvent.record(
+            actor_id=admin_auth["sub"],
+            action="ITEM_BULK_RETAGGED",
+            entity_type="item",
+            entity_id=str(item.id),
+            old_state=old_state,
+            new_state=updates,
+        )
+
+    return {"retagged_count": len(items), "items": [str(i.id) for i in items]}
 
 
 def scan_for_viruses(blob: bytes) -> bool:
@@ -702,6 +938,76 @@ def register_panel_vote(
     return item
 
 
+def _assert_no_reviewer_conflict(reviewer, item: Item) -> None:
+    """Raise ValueError if the reviewer has an approved COI against this item or its author.
+
+    Queries the committee app ConflictDeclaration table. If the committee app is
+    unavailable the check is skipped (non-blocking) so the workflow is never
+    broken by an unrelated service outage.
+    """
+    try:
+        from apps.committee.models import NBECMember, ConflictDeclaration
+        from django.db.models import Q
+
+        try:
+            member = NBECMember.objects.get(
+                keycloak_sub=reviewer.keycloak_sub, is_active=True
+            )
+        except NBECMember.DoesNotExist:
+            return  # Reviewer is not a tracked NBEC member; no COI to check.
+
+        conflict_exists = ConflictDeclaration.objects.filter(
+            member=member,
+            status=ConflictDeclaration.Status.APPROVED,
+        ).filter(
+            Q(affected_entity_id=item.id)
+            | Q(affected_entity_id=item.author_id_id)
+        ).exists()
+
+        if conflict_exists:
+            raise ValueError(
+                f"Moderator Conflict: Selected reviewer has a declared conflict of interest "
+                f"for this item or its author and cannot be assigned."
+            )
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.warning("COI check skipped due to error: %s", exc)
+
+
+def _assert_active_vault_officer(keycloak_sub: str, role_label: str = "officer") -> None:
+    """Raise ValueError if the user is not among the designated vault officers.
+
+    Resolution order:
+      1. ``settings.VAULT_DESIGNATED_OFFICER_SUBS`` list — explicit allowlist.
+      2. Active NBECMember record in the committee app — softer fallback.
+    If neither check can be evaluated the function silently passes so an
+    unavailable committee app never blocks a legitimate export.
+    """
+    designated: list | None = getattr(settings, "VAULT_DESIGNATED_OFFICER_SUBS", None)
+    if designated is not None:
+        if str(keycloak_sub) not in [str(s) for s in designated]:
+            raise ValueError(
+                "Two-Person Approval Required: vault export requires authorisation "
+                f"from a designated NBEC vault officer ({role_label} not in the authorised list)."
+            )
+        return
+
+    # Fallback: committee app membership check.
+    try:
+        from apps.committee.models import NBECMember
+
+        if not NBECMember.objects.filter(keycloak_sub=keycloak_sub, is_active=True).exists():
+            raise ValueError(
+                "Two-Person Approval Required: vault export must be authorised by "
+                f"an active NBEC officer ({role_label} is not a current NBEC member)."
+            )
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.warning("Vault officer check skipped due to error: %s", exc)
+
+
 @transaction.atomic
 def execute_vault_cosign(request_id: str, cosigner_id: str) -> VaultExportRequest:
     """
@@ -723,6 +1029,10 @@ def execute_vault_cosign(request_id: str, cosigner_id: str) -> VaultExportReques
         req.status = "Expired"
         req.save()
         raise ValueError("The 72-hour validation window for this request has expired.")
+
+    # Dual-control: both parties must be designated vault officers (SRS-NBE-F02-07).
+    _assert_active_vault_officer(str(req.requester_id.keycloak_sub), role_label="requester")
+    _assert_active_vault_officer(str(cosigner_user.keycloak_sub), role_label="cosigner")
 
     # Prevent self-signing anti-circumvention rule
     if req.requester_id_id == cosigner_user.id:

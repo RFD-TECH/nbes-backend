@@ -103,6 +103,13 @@ class Item(models.Model):
         on_delete=models.DO_NOTHING,
         related_name="authored_items",
     )
+    assigned_reviewer_id = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.DO_NOTHING,
+        related_name="assigned_review_items",
+        null=True,
+        blank=True,
+    )
     audit_hash = models.CharField(max_length=256, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
@@ -446,3 +453,34 @@ class SavedSearch(models.Model):
     shared_with_secretariat = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class MetadataSchema(models.Model):
+    """Versioned controlled vocabulary for item metadata (SRS-NBE-F02-02).
+
+    Only one schema may be active at a time; the unique partial constraint
+    ``only_one_active_metadata_schema`` enforces this at the database level.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    version = models.IntegerField(unique=True)
+    schema_json = models.JSONField()  # {"subjects": [...], "topics": [...], "cognitive_levels": [...], "difficulties": [...], "sources": [...]}
+    is_active = models.BooleanField(default=False, db_index=True)
+    notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.DO_NOTHING
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["is_active"],
+                condition=models.Q(is_active=True),
+                name="only_one_active_metadata_schema",
+            )
+        ]
+
+    def __str__(self):
+        active_label = " (active)" if self.is_active else ""
+        return f"MetadataSchema v{self.version}{active_label}"
