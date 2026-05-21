@@ -849,7 +849,7 @@ class SavedSearchViewSet(viewsets.ModelViewSet):
         """Execute the stored query under the caller's RBAC scope."""
         try:
             saved = self.get_queryset().get(id=pk)
-        except ObjectDoesNotExist:
+        except (ObjectDoesNotExist, ValueError, ValidationError):
             return error_response(
                 "Saved search not found.", status_code=status.HTTP_404_NOT_FOUND
             )

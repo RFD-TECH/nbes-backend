@@ -10,6 +10,7 @@ validation only.
 """
 
 import json
+from types import SimpleNamespace
 
 from rest_framework import serializers
 from .models import (
@@ -314,13 +315,14 @@ class ItemListSerializer(serializers.ModelSerializer):
 
     def _latest_usage(self, obj):
         if "_latest_usage_cache" not in getattr(obj, "__dict__", {}):
-            obj.__dict__["_latest_usage_cache"] = obj.usage_history.order_by(
-                "-recorded_at"
-            ).first()
+            obj.__dict__["_latest_usage_cache"] = SimpleNamespace(
+                facility_index=getattr(obj, "latest_facility_index", None),
+                discrimination_index=getattr(obj, "latest_discrimination_index", None),
+            )
         return obj.__dict__["_latest_usage_cache"]
 
     def get_usage_count(self, obj) -> int:
-        return obj.usage_history.count()
+        return getattr(obj, "usage_count", 0)
 
     def get_latest_facility_index(self, obj):
         usage = self._latest_usage(obj)
@@ -410,8 +412,12 @@ class RuleBasedPaperSerializer(serializers.Serializer):
     mode = serializers.CharField()
     total_marks = serializers.DecimalField(max_digits=6, decimal_places=2)
     time_limit = serializers.IntegerField()
-    difficulty_distribution = serializers.DictField(child=serializers.IntegerField())
-    topic_coverage = serializers.DictField(child=serializers.IntegerField())
+    difficulty_distribution = serializers.DictField(
+        child=serializers.IntegerField(min_value=0, max_value=100)
+    )
+    topic_coverage = serializers.DictField(
+        child=serializers.IntegerField(min_value=0, max_value=100)
+    )
     blueprint_ref = serializers.CharField(required=False, allow_blank=True)
     variants_count = serializers.IntegerField(required=False, min_value=1, default=1)
 
