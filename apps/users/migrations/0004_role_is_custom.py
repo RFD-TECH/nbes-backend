@@ -1,4 +1,4 @@
-from django.db import migrations, models
+from django.db import migrations
 
 
 SEEDED_ROLE_NAMES = [
@@ -25,7 +25,6 @@ def mark_all_roles_custom(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("users", "0003_normalize_keycloak_role_names"),
     ]

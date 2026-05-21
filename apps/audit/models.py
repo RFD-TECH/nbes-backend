@@ -53,7 +53,7 @@ class AuditEvent(models.Model):
             )
         """
         with transaction.atomic():
-         return cls._record_atomic(action=action, **kwargs)
+            return cls._record_atomic(action=action, **kwargs)
 
     @classmethod
     def _record_atomic(cls, *, action: str, **kwargs) -> "AuditEvent":
@@ -94,27 +94,6 @@ class AuditEvent(models.Model):
         return event
 
 
-class DailyHashAnchor(models.Model):
-    """
-    One row per UTC date. Stores the SHA-256 chain head for that day.
-    The daily Celery Beat task exports this to System 22 by 01:00 UTC.
-    """
-    date = models.DateField(unique=True)
-    head_hash = models.CharField(max_length=64)
-    event_count = models.PositiveIntegerField(default=0)
-    exported_to_s22_at = models.DateTimeField(null=True, blank=True)
-    anchor_ref = models.CharField(max_length=200, blank=True)  # System 22 reference
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = "audit_dailyhashanchor"
-        ordering = ["-date"]
-
-    def __str__(self):
-        exported = "exported" if self.exported_to_s22_at else "pending"
-        return f"AnchorHash {self.date} [{exported}]"
-
-
 class OutboxEvent(models.Model):
     """
     Transactional outbox for Kafka event delivery.
@@ -138,3 +117,104 @@ class OutboxEvent(models.Model):
 
     def __str__(self):
         return f"{self.event_name} → {self.topic} ({'sent' if self.published else 'pending'})"
+
+
+class SecurityEvent(models.Model):
+    """NBES-side security observation.
+
+    Recorded whenever the service rejects a request for security reasons:
+    bad signature, expired token, audience mismatch, AUTHZ_DENIED, edge
+    throttle applied, IP block triggered.
+
+    Categories are aligned with the System 22 SIEM schema (severity,
+    category, indicators) per blueprint §1.2.6. Every row also lands in
+    the outbox so System 22 sees the same view in near-real-time.
+
+    Retention: last 90 days hot in this table (via ``cleanup_security_events``).
+    Cold storage is System 22's responsibility.
+    """
+
+    CATEGORY_CHOICES = [
+        ("auth_token_invalid",     "auth_token_invalid"),
+        ("auth_token_expired",     "auth_token_expired"),
+        ("auth_audience_mismatch", "auth_audience_mismatch"),
+        ("authz_denied",           "authz_denied"),
+        ("throttle_applied",       "throttle_applied"),
+        ("ip_blocked",             "ip_blocked"),
+        ("anomaly_detected",       "anomaly_detected"),
+    ]
+
+    SEVERITY_CHOICES = [
+        ("info",    "info"),
+        ("warning", "warning"),
+        ("high",    "high"),
+    ]
+
+    id = models.BigAutoField(primary_key=True)
+    event_id = models.UUIDField(unique=True, default=uuid.uuid4)
+    category = models.CharField(max_length=40, choices=CATEGORY_CHOICES, db_index=True)
+    severity = models.CharField(max_length=10, choices=SEVERITY_CHOICES, default="warning")
+    indicators = models.JSONField(
+        default=dict,
+        help_text="Free-form details: path, method, role names, reason, etc.",
+    )
+    ip_address = models.GenericIPAddressField(null=True, blank=True, db_index=True)
+    actor_id = models.UUIDField(null=True, blank=True, db_index=True)
+    request_id = models.UUIDField(null=True, blank=True)
+    occurred_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        db_table = "audit_securityevent"
+        ordering = ["-occurred_at"]
+        verbose_name = "Security Event"
+        indexes = [
+            models.Index(fields=["category", "occurred_at"]),
+            models.Index(fields=["ip_address", "occurred_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.category}@{self.ip_address or '-'} {self.occurred_at.isoformat()}"
+
+
+class DailyHashAnchor(models.Model):
+    """
+    Per-day anchor of the audit chain. Built by ``daily_hash_anchor`` Celery
+    Beat task at 01:00 UTC: takes the last ``AuditEvent.chain_hash`` for the
+    UTC day, records the anchor row, and emits ``AuditChainAnchorReady`` to
+    the outbox for System 22 to pick up and notarise.
+
+    Once ``exported_to_s22_at`` is set and ``anchor_ref`` is populated by
+    System 22's webhook, the day is independently verifiable using System
+    22's published public key.
+
+    Blueprint references: §1.2.7, §1.4 (`GET /api/v1/audit/chain/{date}`),
+    §1.6 ("Daily hash anchor must be exported to System 22 by 01:00 UTC;
+    failure pages the on-call.").
+    """
+    date = models.DateField(unique=True, db_index=True)
+    head_event_id = models.UUIDField(
+        null=True, blank=True,
+        help_text="event_id of the last AuditEvent on this UTC day.",
+    )
+    head_hash = models.CharField(
+        max_length=64,
+        help_text="SHA-256 chain hash of the day's last event. The anchor.",
+    )
+    event_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of AuditEvent rows produced on this UTC day.",
+    )
+    exported_to_s22_at = models.DateTimeField(null=True, blank=True)
+    anchor_ref = models.CharField(
+        max_length=255, blank=True, default="",
+        help_text="Receipt id returned by System 22 once notarisation completes.",
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = "audit_dailyhashanchor"
+        ordering = ["-date"]
+        verbose_name = "Daily Hash Anchor"
+
+    def __str__(self):
+        return f"{self.date.isoformat()} → {self.head_hash[:12]}…"

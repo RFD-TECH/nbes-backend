@@ -1,110 +1,196 @@
-"""apps/audit/tasks.py — Outbox poller + daily hash-anchor export."""
-import datetime
+"""apps/audit/tasks.py — Outbox poller, daily anchors, and SecOps jobs."""
+from __future__ import annotations
+
 import logging
+from datetime import datetime, time, timedelta, timezone as py_timezone
 
 from celery import shared_task
+from django.db import transaction
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+GENESIS_HASH = "0" * 64
+
 
 @shared_task(name="apps.audit.tasks.poll_outbox", queue="outbox")
 def poll_outbox():
-    """Relay unpublished OutboxEvents to Kafka (or mark as published in dev)."""
+    """Relay unpublished OutboxEvent rows to the event bus."""
     from django.conf import settings
+
     from apps.audit.models import OutboxEvent
 
-    if settings.KAFKA_ENABLED:
-        raise RuntimeError("KAFKA_ENABLED is True but Kafka producer is not configured.")
-
     unpublished = OutboxEvent.objects.filter(published=False).order_by("created_at")[:100]
+    sent = 0
     for event in unpublished:
         try:
+            if settings.KAFKA_ENABLED:
+                _publish_via_system_17(event)
+            else:
+                _publish_local_dev(event)
             event.published = True
             event.published_at = timezone.now()
             event.save(update_fields=["published", "published_at"])
+            sent += 1
         except Exception as exc:
             logger.error("OutboxEvent %s failed: %s", event.id, exc)
+    if sent:
+        logger.info("outbox: relayed %d event(s)", sent)
 
 
-@shared_task(name="apps.audit.tasks.export_daily_audit_anchor", queue="marking-high")
-def export_daily_audit_anchor():
+def _publish_local_dev(event) -> None:
+    logger.debug("dev outbox publish: %s -> %s", event.topic, event.event_name)
+
+
+def _publish_via_system_17(event) -> None:
+    """Production publish via System 17."""
+    from shared.integrations import call_system_17
+
+    response = call_system_17(
+        endpoint=f"/v1/events/{event.topic}",
+        payload={
+            "event_name": event.event_name,
+            "topic": event.topic,
+            "payload": event.payload,
+            "correlation_id": str(event.correlation_id),
+            "occurred_at": event.created_at.isoformat(),
+        },
+        idempotency_key=str(event.correlation_id),
+        correlation_id=str(event.correlation_id),
+    )
+    if not response.ok:
+        raise RuntimeError(
+            f"System 17 publish failed: code={response.code} "
+            f"status={response.status_code} retryable={response.retryable}"
+        )
+
+
+@shared_task(name="apps.audit.tasks.daily_hash_anchor", queue="outbox", bind=True)
+def daily_hash_anchor(self, target_date: str | None = None):
+    """Anchor a UTC day's audit chain.
+
+    Empty days carry forward the last chain hash before the day so the
+    global audit chain remains continuous across zero-event days.
     """
-    Export yesterday's audit chain head-hash to System 22 by 01:00 UTC.
-    Creates or updates DailyHashAnchor. Idempotent — safe to retry.
-
-    Beat schedule: daily at 01:00 UTC (see config/celery.py).
-    On failure: logs to audit_export_failed.jsonl for manual replay.
-    """
-    import json
-    from pathlib import Path
-    from django.conf import settings
     from apps.audit.models import AuditEvent, DailyHashAnchor
-    from shared.integrations.system22 import System22Client
+    from shared.events import publish
 
-    now_utc = timezone.now()
-    yesterday = (now_utc - datetime.timedelta(days=1)).date()
-    day_start = datetime.datetime(yesterday.year, yesterday.month, yesterday.day,
-                                  tzinfo=datetime.timezone.utc)
-    day_end = day_start + datetime.timedelta(days=1)
+    target = _resolve_target_date(target_date)
+    day_start = datetime.combine(target, time.min, tzinfo=py_timezone.utc)
+    day_end = day_start + timedelta(days=1)
 
-    anchor, _ = DailyHashAnchor.objects.get_or_create(
-        date=yesterday,
-        defaults={"head_hash": "0" * 64, "event_count": 0},
+    queryset = AuditEvent.objects.filter(
+        created_at__gte=day_start,
+        created_at__lt=day_end,
+    ).order_by("id")
+
+    head = queryset.order_by("-id").values("event_id", "chain_hash").first()
+    count = queryset.count()
+    previous_head = (
+        AuditEvent.objects
+        .filter(created_at__lt=day_start)
+        .order_by("-id")
+        .values("chain_hash")
+        .first()
     )
 
-    if anchor.exported_to_s22_at:
-        logger.info("Audit anchor %s already exported — skipping.", yesterday)
-        return
+    head_hash = (
+        head["chain_hash"]
+        if head
+        else previous_head["chain_hash"] if previous_head else GENESIS_HASH
+    )
+    head_event_id = head["event_id"] if head else None
 
-    qs = AuditEvent.objects.filter(
-        created_at__gte=day_start, created_at__lt=day_end
-    ).order_by("id")
-    count = qs.count()
-
-    if count == 0:
-        head_hash = "0" * 64
-        logger.info("No audit events for %s — exporting zero-event anchor.", yesterday)
-    else:
-        last = qs.values("chain_hash").last()
-        head_hash = last["chain_hash"]
-
-    anchor.head_hash = head_hash
-    anchor.event_count = count
-    anchor.save(update_fields=["head_hash", "event_count"])
-
-    try:
-        client = System22Client()
-        ref = client.export_audit_anchor(
-            date=str(yesterday),
-            head_hash=head_hash,
-            event_count=count,
+    with transaction.atomic():
+        DailyHashAnchor.objects.update_or_create(
+            date=target,
+            defaults={
+                "head_event_id": head_event_id,
+                "head_hash": head_hash,
+                "event_count": count,
+            },
         )
-        anchor.exported_to_s22_at = timezone.now()
-        anchor.anchor_ref = ref
-        anchor.save(update_fields=["exported_to_s22_at", "anchor_ref"])
-        logger.info("Audit anchor %s exported to System 22. ref=%s", yesterday, ref)
-    except Exception as exc:
-        logger.error("Audit anchor export failed for %s: %s", yesterday, exc)
-        _write_fallback_log(yesterday, head_hash, count, str(exc))
-        raise
+        publish(
+            "AuditChainAnchorReady",
+            {
+                "date": target.isoformat(),
+                "head_event_id": str(head_event_id) if head_event_id else None,
+                "head_hash": head_hash,
+                "event_count": count,
+                "source_system": "nbes",
+            },
+            topic="nbes.audit",
+        )
+
+    logger.info(
+        "daily_hash_anchor: %s anchored head=%s count=%d",
+        target.isoformat(),
+        head_hash[:12],
+        count,
+    )
+    return {"date": target.isoformat(), "head_hash": head_hash, "event_count": count}
 
 
-def _write_fallback_log(date, head_hash, event_count, error):
-    """Append to local fallback file when System 22 is unreachable."""
-    import json
-    from pathlib import Path
+@shared_task(name="apps.audit.tasks.cleanup_security_events", queue="sla-monitor")
+def cleanup_security_events():
+    """Delete SecurityEvent rows older than the configured hot-retention window."""
     from django.conf import settings
 
-    log_dir = Path(settings.BASE_DIR) / "logs"
-    log_dir.mkdir(exist_ok=True)
-    log_file = log_dir / "audit_export_failed.jsonl"
-    entry = json.dumps({
-        "date": str(date),
-        "head_hash": head_hash,
-        "event_count": event_count,
-        "error": error,
-        "ts": timezone.now().isoformat(),
-    })
-    with open(log_file, "a") as f:
-        f.write(entry + "\n")
+    from apps.audit.models import SecurityEvent
+
+    days = getattr(settings, "EDGE_SECURITY_EVENT_RETENTION_DAYS", 90)
+    cutoff = timezone.now() - timedelta(days=days)
+    deleted, _ = SecurityEvent.objects.filter(occurred_at__lt=cutoff).delete()
+    if deleted:
+        logger.info("cleanup_security_events: deleted %d row(s) < %s", deleted, cutoff)
+    return deleted
+
+
+@shared_task(name="apps.audit.tasks.daily_security_summary", queue="sla-monitor")
+def daily_security_summary(target_date: str | None = None):
+    """Aggregate yesterday's SecurityEvent rows and publish a summary."""
+    from django.db.models import Count
+
+    from apps.audit.models import SecurityEvent
+    from shared.events import publish
+
+    target = _resolve_target_date(target_date)
+    day_start = datetime.combine(target, time.min, tzinfo=py_timezone.utc)
+    day_end = day_start + timedelta(days=1)
+
+    queryset = SecurityEvent.objects.filter(
+        occurred_at__gte=day_start,
+        occurred_at__lt=day_end,
+    )
+    by_category = dict(
+        queryset.values_list("category").annotate(c=Count("id")).values_list("category", "c")
+    )
+    by_severity = dict(
+        queryset.values_list("severity").annotate(c=Count("id")).values_list("severity", "c")
+    )
+    top_ips = list(
+        queryset.exclude(ip_address__isnull=True)
+        .values("ip_address")
+        .annotate(c=Count("id"))
+        .order_by("-c")[:10]
+    )
+
+    summary = {
+        "date": target.isoformat(),
+        "total": queryset.count(),
+        "by_category": by_category,
+        "by_severity": by_severity,
+        "top_ips": [{"ip": row["ip_address"], "count": row["c"]} for row in top_ips],
+    }
+
+    publish("SecurityDailySummary", summary, topic="nbes.secops")
+    logger.info("daily_security_summary: %s total=%d", target.isoformat(), summary["total"])
+    return summary
+
+
+def _resolve_target_date(target_date):
+    if target_date is None:
+        return (timezone.now().astimezone(py_timezone.utc) - timedelta(days=1)).date()
+    if hasattr(target_date, "isoformat") and not isinstance(target_date, str):
+        return target_date
+    return datetime.fromisoformat(target_date).date()

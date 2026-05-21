@@ -20,10 +20,14 @@ import sys
 
 
 # Patterns that indicate the API surface changed.
+# Match plain ``views.py`` / ``urls.py`` AND any prefixed variant like
+# ``secops_views.py`` or ``admin_urls.py`` so split-out surfaces in the
+# same app are caught too.
 API_FILE_PATTERNS = [
-    re.compile(r"apps/[^/]+/views\.py$"),
-    re.compile(r"apps/[^/]+/urls\.py$"),
-    re.compile(r"apps/[^/]+/serializers\.py$"),
+    re.compile(r"apps/[^/]+/(?:.*/)?(?:[a-z_]*_)?views\.py$"),
+    re.compile(r"apps/[^/]+/(?:.*/)?(?:[a-z_]*_)?urls\.py$"),
+    re.compile(r"apps/[^/]+/(?:.*/)?(?:[a-z_]*_)?serializers\.py$"),
+    re.compile(r"apps/[^/]+/(?:.*/)?(?:[a-z_]*_)?filters\.py$"),
     re.compile(r"config/urls\.py$"),
 ]
 

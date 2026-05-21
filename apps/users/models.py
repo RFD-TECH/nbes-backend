@@ -14,7 +14,7 @@ Three RBAC tables:
   NBES-scoped role names IAM has created in the Keycloak realm (one row per
   role-name that NBES knows about). A JWT can carry roles NBES does not
   recognise — those are ignored.
-* ``RolePermission`` — the editable matrix. A system-administrator can grant
+* ``RolePermission`` — the editable matrix. A system_administrator can grant
   or revoke a codename on a role without a redeploy. This is the bit
   REQ-F000-02 calls "configurable".
 """

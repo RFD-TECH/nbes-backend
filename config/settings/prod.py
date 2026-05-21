@@ -18,6 +18,16 @@ if KEYCLOAK_ENABLED and NBES_CLIENT_ID not in KEYCLOAK_VALID_AUDIENCES:
         "NBES will reject every token from itself."
     )
 
+# System 17 secret is required whenever the outbox publishes off-box.
+# A blank secret is allowed in dev (KAFKA_ENABLED=False); in prod the
+# outbox publish path raises and rows pile up otherwise.
+if KAFKA_ENABLED and not (SYSTEM_17_HMAC_SECRET or "").strip():
+    raise ImproperlyConfigured(
+        "SYSTEM_17_HMAC_SECRET must be set in production when "
+        "KAFKA_ENABLED=True. Without it shared.integrations.call_system_17 "
+        "cannot sign outgoing requests."
+    )
+
 # Security hardening for production
 SECURE_SSL_REDIRECT = True
 SECURE_HSTS_SECONDS = 31536000
