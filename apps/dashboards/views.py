@@ -11,6 +11,7 @@ Frontend renders. Backend just serves the contract.
 """
 from __future__ import annotations
 
+from django.db import transaction
 from drf_spectacular.utils import (
     OpenApiExample,
     OpenApiParameter,
@@ -135,7 +136,17 @@ class PanelDetailView(APIView):
         operation_id="dashboard_panel_update",
         request=PatchPanelSerializer,
         responses={
-            200: DashboardPanelSerializer,
+            200: inline_serializer(
+                name="DashboardPanelUpdateResponse",
+                fields={
+                    "success": serializers.BooleanField(default=True),
+                    "data": DashboardPanelSerializer(),
+                    "meta": inline_serializer(
+                        name="DashboardPanelUpdateMeta",
+                        fields={"request_id": serializers.CharField()},
+                    ),
+                },
+            ),
             404: inline_serializer(
                 name="PanelNotFound",
                 fields={
@@ -178,18 +189,23 @@ class PanelDetailView(APIView):
             if field in d:
                 setattr(panel, field, d[field])
                 update_fields.append(field)
-        if update_fields:
-            update_fields.append("updated_at")
-            panel.save(update_fields=update_fields)
+        with transaction.atomic():
+            if update_fields:
+                update_fields.append("updated_at")
+                panel.save(update_fields=update_fields)
 
-        AuditEvent.record(
-            actor_id=(request.auth or {}).get("sub") or None,
-            action="DASHBOARD_PANEL_UPDATED",
-            entity_type="dashboard_panel",
-            old_state=before,
-            new_state={field: getattr(panel, field) for field in update_fields if field != "updated_at"},
-            ip_address=getattr(request, "ip_address", None),
-            request_id=getattr(request, "request_id", None),
-        )
+            AuditEvent.record(
+                actor_id=(request.auth or {}).get("sub") or None,
+                action="DASHBOARD_PANEL_UPDATED",
+                entity_type="dashboard_panel",
+                old_state=before,
+                new_state={
+                    field: getattr(panel, field)
+                    for field in update_fields
+                    if field != "updated_at"
+                },
+                ip_address=getattr(request, "ip_address", None),
+                request_id=getattr(request, "request_id", None),
+            )
 
         return _envelope(DashboardPanelSerializer(panel).data, request)

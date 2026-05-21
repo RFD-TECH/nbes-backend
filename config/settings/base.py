@@ -101,7 +101,7 @@ DATABASES = {
         "NAME": os.environ.get("DBNAME", BASE_DIR / "db.sqlite3"),
         "USER": os.environ.get("DBUSER", ""),
         "PASSWORD": os.environ.get("DBPASSWORD", ""),
-        "HOST": os.environ.get("DBHOST", ""),
+        "HOST": os.environ.get("NBES_DBHOST", os.environ.get("DBHOST", "")),
         "PORT": os.environ.get("DBPORT", ""),
     }
 }
@@ -173,8 +173,12 @@ CORS_ALLOWED_ORIGINS = os.environ.get(
 ).split(",")
 
 # ── Celery ────────────────────────────────────────────────────────────────────
-CELERY_BROKER_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-CELERY_RESULT_BACKEND = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.environ.get(
+    "NBES_REDIS_URL",
+    os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+)
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"

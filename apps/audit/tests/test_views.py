@@ -38,3 +38,14 @@ class AuditExportQueryTests(TestCase):
         query = _audit_export_query({"from": "2026-05-18", "to": "2026-05-18"})
 
         self.assertEqual(list(AuditEvent.objects.filter(query)), [target])
+
+    def test_legacy_export_window_aliases_are_not_overridden(self):
+        target = AuditEvent.objects.create(
+            action="LEGACY_WINDOW",
+            chain_hash="1" * 64,
+            created_at=datetime(2026, 5, 18, 12, tzinfo=py_timezone.utc),
+        )
+
+        query = _audit_export_query({"date_from": "2026-05-18", "date_to": "2026-05-18"})
+
+        self.assertEqual(list(AuditEvent.objects.filter(query)), [target])

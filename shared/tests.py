@@ -63,6 +63,23 @@ class IdempotencyKeyMiddlewareTests(SimpleTestCase):
 
         self.assertNotEqual(key_a, key_b)
 
+    def test_unauthenticated_cache_key_uses_forwarded_client_ip(self):
+        request_factory = RequestFactory()
+        request_a = request_factory.post(
+            "/api/v1/example",
+            HTTP_X_FORWARDED_FOR="203.0.113.7, 10.0.0.1",
+            REMOTE_ADDR="10.0.0.1",
+        )
+        request_b = request_factory.post(
+            "/api/v1/example",
+            REMOTE_ADDR="203.0.113.7",
+        )
+
+        key_a = IdempotencyKeyMiddleware._build_cache_key(request_a, "same-key")
+        key_b = IdempotencyKeyMiddleware._build_cache_key(request_b, "same-key")
+
+        self.assertEqual(key_a, key_b)
+
 
 class EdgeRateLimitMiddlewareTests(SimpleTestCase):
     def tearDown(self):

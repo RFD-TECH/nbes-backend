@@ -22,7 +22,6 @@ def _record_denial(request, codename: str) -> None:
     stays usable during migrations and management commands where apps
     aren't loaded yet."""
     from apps.audit.models import AuditEvent
-    from shared.secops import record_security_event
 
     payload = request.auth or {}
     actor_id = payload.get("sub") or None
@@ -41,13 +40,17 @@ def _record_denial(request, codename: str) -> None:
         ip_address=getattr(request, "ip_address", None),
         request_id=getattr(request, "request_id", None),
     )
-    record_security_event(
-        category="authz_denied",
-        ip_address=getattr(request, "ip_address", None),
-        actor_id=actor_id,
-        request_id=getattr(request, "request_id", None),
-        indicators=indicators,
-    )
+    try:
+        from shared.secops import record_security_event
+        record_security_event(
+            category="authz_denied",
+            ip_address=getattr(request, "ip_address", None),
+            actor_id=actor_id,
+            request_id=getattr(request, "request_id", None),
+            indicators=indicators,
+        )
+    except Exception:
+        pass
 
 
 class HasPermission(BasePermission):

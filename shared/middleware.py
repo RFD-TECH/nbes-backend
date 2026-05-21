@@ -183,7 +183,7 @@ class IdempotencyKeyMiddleware:
                 auth_header.encode("utf-8")
             ).hexdigest()
         else:
-            principal = f"ip:{request.META.get('REMOTE_ADDR', '')}"
+            principal = f"ip:{AuditMiddleware._get_client_ip(request)}"
         material = "\x1f".join([request.method, request.path, principal, key])
         digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
         return f"{IdempotencyKeyMiddleware.CACHE_PREFIX}:{digest}"

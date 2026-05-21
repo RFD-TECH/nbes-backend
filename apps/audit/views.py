@@ -40,10 +40,14 @@ def _yesterday_utc_bounds(now: datetime | None = None) -> tuple[datetime, dateti
 def _audit_export_query(params, *, default_bounds=None):
     """Build export query, defaulting an unbounded request to yesterday UTC."""
     q = build_audit_query(params)
-    if not params.get("from") and not params.get("to"):
+    if not _has_export_window(params):
         start, end = default_bounds or _yesterday_utc_bounds()
         q &= Q(created_at__gte=start, created_at__lte=end)
     return q
+
+
+def _has_export_window(params) -> bool:
+    return any(params.get(name) for name in ("from", "to", "date_from", "date_to"))
 
 
 def _meta_audit(request, *, action: str, new_state: dict) -> None:
@@ -85,7 +89,24 @@ class AuditSearchView(APIView):
             OpenApiParameter("page", int, required=False),
             OpenApiParameter("page_size", int, required=False),
         ],
-        responses={200: AuditEventSerializer(many=True)},
+        responses={
+            200: inline_serializer(
+                name="AuditSearchResponse",
+                fields={
+                    "success": serializers.BooleanField(default=True),
+                    "data": AuditEventSerializer(many=True),
+                    "meta": inline_serializer(
+                        name="AuditSearchMeta",
+                        fields={
+                            "page": serializers.IntegerField(),
+                            "total": serializers.IntegerField(),
+                            "pages": serializers.IntegerField(),
+                            "request_id": serializers.CharField(),
+                        },
+                    ),
+                },
+            ),
+        },
     )
     def get(self, request):
         q = build_audit_query(request.query_params)
@@ -232,7 +253,7 @@ class AuditExportView(APIView):
     def get(self, request):
         default_bounds = (
             _yesterday_utc_bounds()
-            if not request.query_params.get("from") and not request.query_params.get("to")
+            if not _has_export_window(request.query_params)
             else None
         )
         q = _audit_export_query(request.query_params, default_bounds=default_bounds)
@@ -254,8 +275,8 @@ class AuditExportView(APIView):
                 yield dumps(row, default=str) + "\n"
 
         response = StreamingHttpResponse(lines(), content_type="application/x-ndjson")
-        start = request.query_params.get("from", "")
-        end = request.query_params.get("to", "")
+        start = request.query_params.get("from") or request.query_params.get("date_from", "")
+        end = request.query_params.get("to") or request.query_params.get("date_to", "")
         if default_bounds:
             default_start, default_end = default_bounds
             start = default_start.date().isoformat()
