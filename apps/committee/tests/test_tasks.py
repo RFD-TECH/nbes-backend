@@ -73,8 +73,11 @@ class TestMonitorTenureExpiry:
         assert active_member.is_active is False
         assert result["expired"] == 1
 
-    @patch("apps.committee.tasks.publish")
+    @patch("shared.events.publish")
     def test_publishes_member_expired_event_for_iam(self, mock_publish, active_member):
+        # ``monitor_tenure_expiry`` does ``from shared.events import publish``
+        # inside the function body, so we must patch the source, not the
+        # ``apps.committee.tasks`` module namespace.
         monitor_tenure_expiry()
 
         mock_publish.assert_called_once()

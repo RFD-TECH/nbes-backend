@@ -51,12 +51,20 @@ class NBECMember(models.Model):
     class Meta:
         db_table = "committee_nbecmember"
         constraints = [
-            # At most one active Chair at a time (SRS §2.7 / §2.2.1)
+            # At most one active Chair at a time (SRS §2.7 / §2.2.1).
             models.UniqueConstraint(
                 fields=["designation"],
                 condition=models.Q(designation="chair", status="active"),
                 name="unique_active_chair",
-            )
+            ),
+            # SRS §2.7: "Tenure end > tenure start". Enforced at the DB so
+            # services that bypass full_clean() (e.g. bulk operations, raw
+            # ORM .create() in tests) can't persist invalid ranges.
+            models.CheckConstraint(
+                condition=models.Q(tenure_end__isnull=True)
+                | models.Q(tenure_end__gt=models.F("tenure_start")),
+                name="tenure_end_after_start",
+            ),
         ]
 
     def __str__(self):

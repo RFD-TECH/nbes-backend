@@ -70,7 +70,12 @@ def amend_member(actor_id, member: NBECMember, data: dict, *,
     member.save()
     _audit(actor_id, ev.MEMBER_AMENDED, "committee_member", member.id,
            old_state=old_state,
-           new_state={"full_name": member.full_name, "designation": member.designation},
+           new_state={
+               "full_name": member.full_name,
+               "designation": member.designation,
+               "contact": member.contact,
+               "tenure_end": str(member.tenure_end) if member.tenure_end else None,
+           },
            request_id=request_id, ip_address=ip_address)
     publish("MemberAmended", {"member_id": str(member.id)})
     return member

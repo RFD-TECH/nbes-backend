@@ -11,6 +11,7 @@ import logging
 from datetime import date, timedelta
 
 from celery import shared_task
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -47,24 +48,26 @@ def monitor_tenure_expiry():
     expired_count = 0
     for member in due:
         try:
-            member.expire()
-
-            AuditEvent.record(
-                actor_id=None,
-                action=ev.MEMBER_EXPIRED,
-                entity_type="committee_member",
-                entity_id=member.id,
-                old_state={"status": "active"},
-                new_state={"status": "expired", "tenure_end": str(member.tenure_end)},
-            )
-
-            # IAM listens for this event and revokes the user's NBEC role.
-            publish("MemberExpired", {
-                "member_id": str(member.id),
-                "keycloak_sub": str(member.keycloak_sub),
-                "designation": member.designation,
-                "tenure_end": str(member.tenure_end),
-            })
+            # Local DB transition + audit + outbox publish must commit together
+            # so IAM never sees an "expired" member without the corresponding
+            # MemberExpired event (and vice-versa).
+            with transaction.atomic():
+                member.expire()
+                AuditEvent.record(
+                    actor_id=None,
+                    action=ev.MEMBER_EXPIRED,
+                    entity_type="committee_member",
+                    entity_id=member.id,
+                    old_state={"status": "active"},
+                    new_state={"status": "expired", "tenure_end": str(member.tenure_end)},
+                )
+                # IAM listens for this event and revokes the user's NBEC role.
+                publish("MemberExpired", {
+                    "member_id": str(member.id),
+                    "keycloak_sub": str(member.keycloak_sub),
+                    "designation": member.designation,
+                    "tenure_end": str(member.tenure_end),
+                })
             expired_count += 1
         except Exception:
             logger.exception("Failed to expire member %s", member.id)
@@ -97,24 +100,25 @@ def escalate_overdue_actions():
     escalated_count = 0
     for item in overdue:
         try:
-            item.status = ActionItem.Status.OVERDUE
-            item.last_escalated_at = timezone.now()
-            item.save(update_fields=["status", "last_escalated_at"])
-            AuditEvent.record(
-                actor_id=None,
-                action=ev.ACTION_ITEM_ESCALATED,
-                entity_type="action_item",
-                entity_id=item.id,
-                new_state={
-                    "due_date": str(item.due_date),
+            with transaction.atomic():
+                item.status = ActionItem.Status.OVERDUE
+                item.last_escalated_at = timezone.now()
+                item.save(update_fields=["status", "last_escalated_at"])
+                AuditEvent.record(
+                    actor_id=None,
+                    action=ev.ACTION_ITEM_ESCALATED,
+                    entity_type="action_item",
+                    entity_id=item.id,
+                    new_state={
+                        "due_date": str(item.due_date),
+                        "assigned_to_id": str(item.assigned_to_id),
+                    },
+                )
+                publish("ActionItemEscalated", {
+                    "action_item_id": str(item.id),
                     "assigned_to_id": str(item.assigned_to_id),
-                },
-            )
-            publish("ActionItemEscalated", {
-                "action_item_id": str(item.id),
-                "assigned_to_id": str(item.assigned_to_id),
-                "due_date": str(item.due_date),
-            })
+                    "due_date": str(item.due_date),
+                })
             escalated_count += 1
         except Exception:
             logger.exception("Failed to escalate action item %s", item.id)
@@ -180,23 +184,25 @@ def archive_minutes_to_system05(self, minutes_id: str):
         )
     except System05Error as exc:
         if not exc.retryable:
-            # Permanent rejection — escalate, do not retry forever.
-            AuditEvent.record(
-                actor_id=None,
-                action=ev.MINUTES_ARCHIVE_FAILED,
-                entity_type="minutes",
-                entity_id=minutes.id,
-                new_state={
+            # Permanent rejection — escalate, do not retry forever. Audit
+            # + outbox publish must commit together.
+            with transaction.atomic():
+                AuditEvent.record(
+                    actor_id=None,
+                    action=ev.MINUTES_ARCHIVE_FAILED,
+                    entity_type="minutes",
+                    entity_id=minutes.id,
+                    new_state={
+                        "reason": str(exc),
+                        "correlation_id": exc.correlation_id,
+                        "retryable": False,
+                    },
+                )
+                publish("MinutesArchiveFailed", {
+                    "minutes_id": str(minutes.id),
+                    "meeting_id": str(minutes.meeting_id),
                     "reason": str(exc),
-                    "correlation_id": exc.correlation_id,
-                    "retryable": False,
-                },
-            )
-            publish("MinutesArchiveFailed", {
-                "minutes_id": str(minutes.id),
-                "meeting_id": str(minutes.meeting_id),
-                "reason": str(exc),
-            })
+                })
             logger.error(
                 "archive_minutes_to_system05: permanent rejection for %s: %s",
                 minutes.id, exc,
@@ -204,20 +210,22 @@ def archive_minutes_to_system05(self, minutes_id: str):
             return {"archived": False, "reason": "permanent_rejection"}
         raise  # let Celery retry
 
-    minutes.archive_ref = archive_ref
-    minutes.save(update_fields=["archive_ref", "updated_at"])
-    AuditEvent.record(
-        actor_id=None,
-        action=ev.MINUTES_ARCHIVED,
-        entity_type="minutes",
-        entity_id=minutes.id,
-        new_state={"archive_ref": archive_ref},
-    )
-    publish("MinutesArchived", {
-        "minutes_id": str(minutes.id),
-        "meeting_id": str(minutes.meeting_id),
-        "archive_ref": archive_ref,
-    })
+    # archive_ref write + audit + outbox publish committed together.
+    with transaction.atomic():
+        minutes.archive_ref = archive_ref
+        minutes.save(update_fields=["archive_ref", "updated_at"])
+        AuditEvent.record(
+            actor_id=None,
+            action=ev.MINUTES_ARCHIVED,
+            entity_type="minutes",
+            entity_id=minutes.id,
+            new_state={"archive_ref": archive_ref},
+        )
+        publish("MinutesArchived", {
+            "minutes_id": str(minutes.id),
+            "meeting_id": str(minutes.meeting_id),
+            "archive_ref": archive_ref,
+        })
     logger.info(
         "archive_minutes_to_system05: minutes %s archived as %s",
         minutes.id, archive_ref,
@@ -244,6 +252,7 @@ def verify_archive_integrity():
     archived = Minutes.objects.exclude(archive_ref="").exclude(archive_ref__isnull=True)
     checked = 0
     mismatched = 0
+    missing = 0
 
     for minutes in archived.iterator():
         local_hash = System05Client.integrity_hash({
@@ -262,37 +271,69 @@ def verify_archive_integrity():
                 archive_ref=minutes.archive_ref, local_hash=local_hash
             )
         except System05Error as exc:
-            logger.warning(
-                "verify_archive_integrity: transport error for %s (%s) — skipping",
-                minutes.archive_ref, exc,
+            if exc.retryable:
+                # Transient transport / 5xx — try again on the next daily run.
+                logger.warning(
+                    "verify_archive_integrity: transient error for %s (%s) — skipping",
+                    minutes.archive_ref, exc,
+                )
+                continue
+            # Non-retryable: archive record gone from System 05. This is a
+            # tamper-evidence failure — audit + alert just like a mismatch.
+            missing += 1
+            with transaction.atomic():
+                AuditEvent.record(
+                    actor_id=None,
+                    action=ev.MINUTES_ARCHIVE_INTEGRITY_MISMATCH,
+                    entity_type="minutes",
+                    entity_id=minutes.id,
+                    new_state={
+                        "archive_ref": minutes.archive_ref,
+                        "reason": "archive_not_found",
+                        "detail": str(exc),
+                        "correlation_id": exc.correlation_id,
+                    },
+                )
+                publish("MinutesArchiveIntegrityMismatch", {
+                    "minutes_id": str(minutes.id),
+                    "archive_ref": minutes.archive_ref,
+                    "reason": "archive_not_found",
+                })
+            logger.critical(
+                "verify_archive_integrity: archive %s MISSING for minutes %s",
+                minutes.archive_ref, minutes.id,
             )
             continue
         checked += 1
         if not matched:
             mismatched += 1
-            AuditEvent.record(
-                actor_id=None,
-                action=ev.MINUTES_ARCHIVE_INTEGRITY_MISMATCH,
-                entity_type="minutes",
-                entity_id=minutes.id,
-                new_state={
+            with transaction.atomic():
+                AuditEvent.record(
+                    actor_id=None,
+                    action=ev.MINUTES_ARCHIVE_INTEGRITY_MISMATCH,
+                    entity_type="minutes",
+                    entity_id=minutes.id,
+                    new_state={
+                        "archive_ref": minutes.archive_ref,
+                        "local_hash": local_hash,
+                        "reason": "hash_mismatch",
+                    },
+                )
+                publish("MinutesArchiveIntegrityMismatch", {
+                    "minutes_id": str(minutes.id),
                     "archive_ref": minutes.archive_ref,
-                    "local_hash": local_hash,
-                },
-            )
-            publish("MinutesArchiveIntegrityMismatch", {
-                "minutes_id": str(minutes.id),
-                "archive_ref": minutes.archive_ref,
-            })
+                    "reason": "hash_mismatch",
+                })
             logger.critical(
                 "verify_archive_integrity: MISMATCH for minutes %s (archive_ref=%s)",
                 minutes.id, minutes.archive_ref,
             )
 
     logger.info(
-        "verify_archive_integrity: checked=%d mismatched=%d", checked, mismatched
+        "verify_archive_integrity: checked=%d mismatched=%d missing=%d",
+        checked, mismatched, missing,
     )
-    return {"checked": checked, "mismatched": mismatched}
+    return {"checked": checked, "mismatched": mismatched, "missing": missing}
 
 
 # ── Annual COI refresh (SRS §2.2.4) ───────────────────────────────────────────
@@ -327,23 +368,31 @@ def monitor_coi_refresh_due():
     prompted = 0
     for coi in qs.iterator():
         try:
-            AuditEvent.record(
-                actor_id=None,
-                action=ev.COI_REFRESH_DUE,
-                entity_type="conflict_declaration",
-                entity_id=coi.id,
-                new_state={
-                    "member_id": str(coi.member_id),
-                    "review_date": str(coi.review_date) if coi.review_date else None,
-                    "effective_from": str(coi.effective_from) if coi.effective_from else None,
-                },
-            )
-            publish("COIRefreshDue", {
-                "coi_id": str(coi.id),
-                "member_id": str(coi.member_id),
-                "subject_type": coi.subject_type,
-                "review_date": str(coi.review_date) if coi.review_date else None,
-            })
+            with transaction.atomic():
+                AuditEvent.record(
+                    actor_id=None,
+                    action=ev.COI_REFRESH_DUE,
+                    entity_type="conflict_declaration",
+                    entity_id=coi.id,
+                    new_state={
+                        "member_id": str(coi.member_id),
+                        "review_date": str(coi.review_date) if coi.review_date else None,
+                        "effective_from": str(coi.effective_from) if coi.effective_from else None,
+                    },
+                )
+                # ``COIRefreshDue`` doesn't match the ``Conflict*`` prefix in
+                # shared.events._infer_topic, so route it explicitly to the
+                # committee topic where IAM / System 21 subscribe.
+                publish(
+                    "COIRefreshDue",
+                    {
+                        "coi_id": str(coi.id),
+                        "member_id": str(coi.member_id),
+                        "subject_type": coi.subject_type,
+                        "review_date": str(coi.review_date) if coi.review_date else None,
+                    },
+                    topic="nbes.committee",
+                )
             prompted += 1
         except Exception:
             logger.exception("monitor_coi_refresh_due: failed to prompt for COI %s", coi.id)

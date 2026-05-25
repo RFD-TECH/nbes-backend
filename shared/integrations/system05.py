@@ -105,15 +105,22 @@ class System05Client:
             return True
 
         correlation_id = str(uuid.uuid4())
-        resp = requests.get(
-            f"{self.base_url}/api/v1/archive/{archive_ref}/integrity",
-            params={"expected_hash": local_hash},
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "X-Correlation-ID": correlation_id,
-            },
-            timeout=15,
-        )
+        try:
+            resp = requests.get(
+                f"{self.base_url}/api/v1/archive/{archive_ref}/integrity",
+                params={"expected_hash": local_hash},
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "X-Correlation-ID": correlation_id,
+                },
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            raise System05Error(
+                f"System 05 integrity transport error: {exc}",
+                retryable=True, correlation_id=correlation_id,
+            ) from exc
+
         if resp.status_code == 404:
             raise System05Error(
                 f"archive_ref {archive_ref!r} not found in System 05",
@@ -125,7 +132,14 @@ class System05Client:
                 retryable=True, correlation_id=correlation_id,
             )
         resp.raise_for_status()
-        return bool(resp.json().get("match", False))
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise System05Error(
+                f"System 05 returned non-JSON integrity response: {exc}",
+                retryable=True, correlation_id=correlation_id,
+            ) from exc
+        return bool(body.get("match", False))
 
     # ── internal helpers ──────────────────────────────────────────────────────
 
@@ -181,7 +195,14 @@ class System05Client:
             )
         resp.raise_for_status()
 
-        archive_ref = resp.json().get("archive_ref")
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise System05Error(
+                f"System 05 returned non-JSON archive response: {exc}",
+                retryable=True, correlation_id=correlation_id,
+            ) from exc
+        archive_ref = body.get("archive_ref")
         if not archive_ref:
             raise System05Error(
                 "System 05 returned no archive_ref; archival cannot be confirmed.",
