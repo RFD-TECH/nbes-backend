@@ -76,8 +76,20 @@ class System05Client:
         signed_at: str,
         signature_ref: str,
         document_ref: str = "",
+        idempotency_key: str = "",
     ) -> str:
-        """Submit signed Minutes to System 05. Returns the archive_ref."""
+        """Submit signed Minutes to System 05. Returns the archive_ref.
+
+        ``idempotency_key`` MUST be supplied by the caller (usually
+        ``minutes_id``). System 05 is expected to deduplicate on this key so
+        Celery retries — including the case where System 05 accepts the
+        payload but the NBES-side commit fails — return the same
+        ``archive_ref`` rather than creating duplicate regulator records.
+        """
+        if not idempotency_key:
+            # Default to the record id so the call remains safe under retry
+            # even if the caller forgot to pass one.
+            idempotency_key = minutes_id
         payload = {
             "source": "nbes",
             "kind": "nbec_minutes",
@@ -89,7 +101,7 @@ class System05Client:
             "signature_ref": signature_ref,
             "document_ref": document_ref,
         }
-        return self._submit("nbec_minutes", payload)
+        return self._submit("nbec_minutes", payload, idempotency_key=idempotency_key)
 
     def verify_integrity(self, *, archive_ref: str, local_hash: str) -> bool:
         """Ask System 05 whether ``archive_ref`` still hashes to ``local_hash``.
@@ -149,7 +161,7 @@ class System05Client:
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(canonical).hexdigest()
 
-    def _submit(self, kind: str, payload: dict) -> str:
+    def _submit(self, kind: str, payload: dict, *, idempotency_key: str = "") -> str:
         integrity_hash = self.integrity_hash(payload)
         envelope = {
             "kind": kind,
@@ -158,23 +170,33 @@ class System05Client:
         }
 
         if self._dev_mode:
-            stub_ref = f"S05-DEV-{kind}-{uuid.uuid4().hex[:8].upper()}"
+            # In dev mode return a stable stub ref so retries are also
+            # idempotent locally (the production guarantee depends on
+            # System 05 honouring X-Idempotency-Key — see archive_minutes).
+            seed = idempotency_key or payload.get("record_id", "") or uuid.uuid4().hex
+            seed_hash = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8].upper()
+            stub_ref = f"S05-DEV-{kind}-{seed_hash}"
             logger.info(
-                "System05 [DEV STUB] %s submitted record_id=%s integrity_hash=%s ref=%s",
-                kind, payload.get("record_id"), integrity_hash, stub_ref,
+                "System05 [DEV STUB] %s submitted record_id=%s "
+                "idempotency_key=%s integrity_hash=%s ref=%s",
+                kind, payload.get("record_id"), idempotency_key,
+                integrity_hash, stub_ref,
             )
             return stub_ref
 
         correlation_id = str(uuid.uuid4())
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "X-Correlation-ID": correlation_id,
+            "Content-Type": "application/json",
+        }
+        if idempotency_key:
+            headers["X-Idempotency-Key"] = idempotency_key
         try:
             resp = requests.post(
                 f"{self.base_url}/api/v1/archive",
                 json=envelope,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "X-Correlation-ID": correlation_id,
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
                 timeout=30,
             )
         except requests.RequestException as exc:

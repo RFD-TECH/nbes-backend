@@ -194,6 +194,15 @@ twice without a clear refresh story.
 
 ---
 
+## System 05 contract NBES depends on (not IAM, but worth flagging)
+
+NBES sends `X-Idempotency-Key: <minutes_id>` (UUID) on every
+`POST /api/v1/archive` call. **System 05 MUST treat repeated calls with
+the same key as the same submission** and return the same `archive_ref`.
+This makes Celery retries safe in the failure window where System 05
+accepts the payload but the NBES-side commit fails. Without server-side
+dedupe, a retry would create a duplicate regulator record.
+
 ## Settings NBES expects from ops (not from IAM team)
 
 ```

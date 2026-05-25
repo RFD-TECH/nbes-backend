@@ -41,18 +41,34 @@ def monitor_tenure_expiry():
     from .models import NBECMember
 
     today = date.today()
-    due = NBECMember.objects.filter(
-        status=NBECMember.Status.ACTIVE,
-        tenure_end__lt=today,
+    # Snapshot the candidates so we know which PKs to iterate. The actual
+    # expire is a conditional UPDATE inside the per-member transaction so a
+    # concurrent renewal between selection and update doesn't get clobbered.
+    candidate_pks = list(
+        NBECMember.objects.filter(
+            status=NBECMember.Status.ACTIVE,
+            tenure_end__lt=today,
+        ).values_list("pk", flat=True)
     )
     expired_count = 0
-    for member in due:
+    for pk in candidate_pks:
         try:
-            # Local DB transition + audit + outbox publish must commit together
-            # so IAM never sees an "expired" member without the corresponding
-            # MemberExpired event (and vice-versa).
             with transaction.atomic():
-                member.expire()
+                # Conditional update: only flip Active→Expired if the row is
+                # still Active AND still past tenure_end. Returns rows-changed.
+                updated = NBECMember.objects.filter(
+                    pk=pk,
+                    status=NBECMember.Status.ACTIVE,
+                    tenure_end__lt=today,
+                ).update(
+                    status=NBECMember.Status.EXPIRED,
+                    updated_at=timezone.now(),
+                )
+                if not updated:
+                    # Concurrently renewed / re-activated / already expired
+                    # by another worker — nothing to do.
+                    continue
+                member = NBECMember.objects.get(pk=pk)
                 AuditEvent.record(
                     actor_id=None,
                     action=ev.MEMBER_EXPIRED,
@@ -70,7 +86,7 @@ def monitor_tenure_expiry():
                 })
             expired_count += 1
         except Exception:
-            logger.exception("Failed to expire member %s", member.id)
+            logger.exception("Failed to expire member %s", pk)
 
     if expired_count:
         logger.info("monitor_tenure_expiry: expired %d member(s)", expired_count)
@@ -92,18 +108,31 @@ def escalate_overdue_actions():
 
     today = date.today()
     retry_cutoff = timezone.now() - datetime.timedelta(hours=24)
-    overdue = ActionItem.objects.filter(due_date__lt=today).filter(
+    # Eligibility predicate is reused for both the candidate scan and the
+    # per-row conditional update so concurrent completion / verification
+    # cannot get rolled back to OVERDUE.
+    eligibility_q = Q(due_date__lt=today) & (
         Q(status__in=[ActionItem.Status.OPEN, ActionItem.Status.IN_PROGRESS])
         | Q(status=ActionItem.Status.OVERDUE, last_escalated_at__isnull=True)
         | Q(status=ActionItem.Status.OVERDUE, last_escalated_at__lt=retry_cutoff)
     )
+    candidate_pks = list(
+        ActionItem.objects.filter(eligibility_q).values_list("pk", flat=True)
+    )
     escalated_count = 0
-    for item in overdue:
+    for pk in candidate_pks:
         try:
             with transaction.atomic():
-                item.status = ActionItem.Status.OVERDUE
-                item.last_escalated_at = timezone.now()
-                item.save(update_fields=["status", "last_escalated_at"])
+                now = timezone.now()
+                updated = ActionItem.objects.filter(eligibility_q, pk=pk).update(
+                    status=ActionItem.Status.OVERDUE,
+                    last_escalated_at=now,
+                )
+                if not updated:
+                    # Item was completed / verified / re-escalated by
+                    # another worker between selection and this update.
+                    continue
+                item = ActionItem.objects.get(pk=pk)
                 AuditEvent.record(
                     actor_id=None,
                     action=ev.ACTION_ITEM_ESCALATED,
@@ -121,7 +150,7 @@ def escalate_overdue_actions():
                 })
             escalated_count += 1
         except Exception:
-            logger.exception("Failed to escalate action item %s", item.id)
+            logger.exception("Failed to escalate action item %s", pk)
 
     if escalated_count:
         logger.info("escalate_overdue_actions: escalated %d action item(s)", escalated_count)
@@ -173,6 +202,10 @@ def archive_minutes_to_system05(self, minutes_id: str):
         return {"archived": True, "archive_ref": minutes.archive_ref, "noop": True}
 
     try:
+        # ``minutes.id`` is a UUID and unique per record, so it doubles as a
+        # deterministic idempotency key. If a previous attempt reached
+        # System 05 but the local commit failed, the retry will receive the
+        # SAME archive_ref instead of creating a duplicate regulator record.
         archive_ref = System05Client().archive_minutes(
             minutes_id=str(minutes.id),
             meeting_reference=minutes.meeting.reference,
@@ -181,6 +214,7 @@ def archive_minutes_to_system05(self, minutes_id: str):
             signed_at=minutes.immutable_at.isoformat(),
             signature_ref=minutes.signature_ref,
             document_ref=minutes.document_ref,
+            idempotency_key=str(minutes.id),
         )
     except System05Error as exc:
         if not exc.retryable:
