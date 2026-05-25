@@ -1,7 +1,12 @@
-"""apps/committee/tests/test_tasks.py — monitor_tenure_expiry and escalate_overdue_actions."""
+"""apps/committee/tests/test_tasks.py — monitor_tenure_expiry and escalate_overdue_actions.
+
+NBES does NOT call Keycloak/IAM directly on tenure expiry. Identity revocation
+is IAM's responsibility, triggered by the ``MemberExpired`` event NBES publishes.
+These tests assert the local DB transition, the audit entry, and the event.
+"""
 import datetime
 import uuid
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -16,11 +21,11 @@ def active_member(db):
     return NBECMember.objects.create(
         keycloak_sub=uuid.uuid4(),
         full_name="Tenure Test",
-        email="tenure@example.com",
-        role=NBECMember.Role.MEMBER,
+        contact="tenure@example.com",
+        designation=NBECMember.Designation.MEMBER,
         status=NBECMember.Status.ACTIVE,
-        appointment_date=datetime.date(2024, 1, 1),
-        tenure_end_date=datetime.date(2024, 12, 31),  # already past
+        tenure_start=datetime.date(2024, 1, 1),
+        tenure_end=datetime.date(2024, 12, 31),  # already past
     )
 
 
@@ -29,24 +34,11 @@ def active_chair(db):
     return NBECMember.objects.create(
         keycloak_sub=uuid.uuid4(),
         full_name="Chair Test",
-        email="chair@example.com",
-        role=NBECMember.Role.CHAIR,
+        contact="chair@example.com",
+        designation=NBECMember.Designation.CHAIR,
         status=NBECMember.Status.ACTIVE,
-        appointment_date=datetime.date(2024, 1, 1),
-        tenure_end_date=datetime.date(2024, 12, 31),
-    )
-
-
-@pytest.fixture
-def active_secretary(db):
-    return NBECMember.objects.create(
-        keycloak_sub=uuid.uuid4(),
-        full_name="Secretary Test",
-        email="secretary@example.com",
-        role=NBECMember.Role.SECRETARY,
-        status=NBECMember.Status.ACTIVE,
-        appointment_date=datetime.date(2024, 1, 1),
-        tenure_end_date=datetime.date(2024, 12, 31),
+        tenure_start=datetime.date(2024, 1, 1),
+        tenure_end=datetime.date(2024, 12, 31),
     )
 
 
@@ -73,77 +65,60 @@ def meeting_with_overdue_action(db):
 @pytest.mark.django_db
 class TestMonitorTenureExpiry:
 
-    @patch("shared.keycloak_admin.revoke_realm_role")
-    def test_expires_member_and_revokes_keycloak(self, mock_revoke, active_member):
+    def test_expires_member_locally(self, active_member):
         result = monitor_tenure_expiry()
 
         active_member.refresh_from_db()
         assert active_member.status == NBECMember.Status.EXPIRED
         assert active_member.is_active is False
         assert result["expired"] == 1
-        mock_revoke.assert_called_once_with(str(active_member.keycloak_sub), "nbec_member")
 
-    @patch("shared.keycloak_admin.revoke_realm_role")
-    def test_secretary_role_revokes_nbec_secretariat(self, mock_revoke, active_secretary):
+    @patch("apps.committee.tasks.publish")
+    def test_publishes_member_expired_event_for_iam(self, mock_publish, active_member):
         monitor_tenure_expiry()
 
-        active_secretary.refresh_from_db()
-        assert active_secretary.status == NBECMember.Status.EXPIRED
-        mock_revoke.assert_called_once_with(str(active_secretary.keycloak_sub), "nbec_secretariat")
+        mock_publish.assert_called_once()
+        event_name, payload = mock_publish.call_args[0]
+        assert event_name == "MemberExpired"
+        assert payload["keycloak_sub"] == str(active_member.keycloak_sub)
+        assert payload["member_id"] == str(active_member.id)
+        assert payload["designation"] == NBECMember.Designation.MEMBER
 
-    @patch("shared.keycloak_admin.revoke_realm_role")
-    def test_chair_role_revokes_nbec_member(self, mock_revoke, active_chair):
+    def test_expires_chair(self, active_chair):
         monitor_tenure_expiry()
 
         active_chair.refresh_from_db()
         assert active_chair.status == NBECMember.Status.EXPIRED
-        mock_revoke.assert_called_once_with(str(active_chair.keycloak_sub), "nbec_member")
 
-    @patch("shared.keycloak_admin.revoke_realm_role")
-    def test_keycloak_failure_does_not_block_db_expiry(self, mock_revoke, active_member):
-        mock_revoke.side_effect = Exception("Keycloak unreachable")
-
-        result = monitor_tenure_expiry()
-
-        # DB expiry must still happen even when Keycloak call fails
-        active_member.refresh_from_db()
-        assert active_member.status == NBECMember.Status.EXPIRED
-        assert result["expired"] == 1
-
-    @patch("shared.keycloak_admin.revoke_realm_role")
-    def test_skips_members_not_yet_expired(self, mock_revoke, db):
+    def test_skips_members_not_yet_expired(self, db):
         NBECMember.objects.create(
             keycloak_sub=uuid.uuid4(),
             full_name="Future Expiry",
-            email="future@example.com",
-            role=NBECMember.Role.MEMBER,
+            contact="future@example.com",
+            designation=NBECMember.Designation.MEMBER,
             status=NBECMember.Status.ACTIVE,
-            appointment_date=datetime.date(2026, 1, 1),
-            tenure_end_date=datetime.date(2099, 12, 31),
+            tenure_start=datetime.date(2026, 1, 1),
+            tenure_end=datetime.date(2099, 12, 31),
         )
         result = monitor_tenure_expiry()
 
         assert result["expired"] == 0
-        mock_revoke.assert_not_called()
 
-    @patch("shared.keycloak_admin.revoke_realm_role")
-    def test_skips_already_expired_members(self, mock_revoke, db):
+    def test_skips_already_expired_members(self, db):
         NBECMember.objects.create(
             keycloak_sub=uuid.uuid4(),
             full_name="Already Gone",
-            email="gone@example.com",
-            role=NBECMember.Role.MEMBER,
+            contact="gone@example.com",
+            designation=NBECMember.Designation.MEMBER,
             status=NBECMember.Status.EXPIRED,
-            appointment_date=datetime.date(2024, 1, 1),
-            tenure_end_date=datetime.date(2024, 6, 1),
+            tenure_start=datetime.date(2024, 1, 1),
+            tenure_end=datetime.date(2024, 6, 1),
         )
         result = monitor_tenure_expiry()
 
         assert result["expired"] == 0
-        mock_revoke.assert_not_called()
 
-    @patch("shared.keycloak_admin.revoke_realm_role")
-    def test_audit_event_recorded(self, mock_revoke, active_member):
+    def test_audit_event_recorded(self, active_member):
         from apps.audit.models import AuditEvent
 
         before = AuditEvent.objects.count()

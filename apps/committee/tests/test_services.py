@@ -21,9 +21,9 @@ def member(db):
     return NBECMember.objects.create(
         keycloak_sub=ACTOR,
         full_name="Alice Chair",
-        email="alice@example.com",
-        role=NBECMember.Role.MEMBER,
-        appointment_date=datetime.date(2026, 1, 1),
+        contact="alice@example.com",
+        designation=NBECMember.Designation.MEMBER,
+        tenure_start=datetime.date(2026, 1, 1),
     )
 
 
@@ -65,9 +65,9 @@ class TestCreateMember:
         member = services.create_member(ACTOR, {
             "keycloak_sub": "10000000-0000-0000-0000-000000000001",
             "full_name": "Bob Smith",
-            "email": "bob@example.com",
-            "role": NBECMember.Role.MEMBER,
-            "appointment_date": datetime.date(2026, 3, 1),
+            "contact": "bob@example.com",
+            "designation": NBECMember.Designation.MEMBER,
+            "tenure_start": datetime.date(2026, 3, 1),
         })
         assert member.status == NBECMember.Status.DRAFT
         assert NBECMember.objects.filter(pk=member.pk).exists()
@@ -78,9 +78,9 @@ class TestCreateMember:
         services.create_member(ACTOR, {
             "keycloak_sub": "20000000-0000-0000-0000-000000000001",
             "full_name": "Carol Jones",
-            "email": "carol@example.com",
-            "role": NBECMember.Role.MEMBER,
-            "appointment_date": datetime.date(2026, 3, 1),
+            "contact": "carol@example.com",
+            "designation": NBECMember.Designation.MEMBER,
+            "tenure_start": datetime.date(2026, 3, 1),
         })
         assert AuditEvent.objects.count() > before
 
@@ -96,7 +96,7 @@ class TestAmendMember:
     def test_audit_event_on_amend(self, member):
         from apps.audit.models import AuditEvent
         before = AuditEvent.objects.count()
-        services.amend_member(ACTOR, member, {"email": "newemail@example.com"})
+        services.amend_member(ACTOR, member, {"contact": "newemail@example.com"})
         assert AuditEvent.objects.count() > before
 
 

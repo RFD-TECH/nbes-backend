@@ -48,9 +48,9 @@ def member(db):
     return NBECMember.objects.create(
         keycloak_sub=ACTOR_SUB,
         full_name="View Test Member",
-        email="view@example.com",
-        role=NBECMember.Role.MEMBER,
-        appointment_date=datetime.date(2026, 1, 1),
+        contact="view@example.com",
+        designation=NBECMember.Designation.MEMBER,
+        tenure_start=datetime.date(2026, 1, 1),
     )
 
 
@@ -106,10 +106,9 @@ class TestMemberCreate:
         resp = client.post(self.url, data={
             "keycloak_sub": "aaaaaaaa-0000-0000-0000-000000000001",
             "full_name": "New Member",
-            "email": "new@example.com",
-            "role": "member",
-            "appointment_date": "2026-01-01",
-            "is_voting_member": True,
+            "contact": "new@example.com",
+            "designation": "member",
+            "tenure_start": "2026-01-01",
         }, format="json")
         assert resp.status_code == 201
         assert resp.json()["success"] is True
@@ -121,7 +120,7 @@ class TestMemberCreate:
 
     def test_missing_required_fields_rejected(self, db):
         client = _secretariat_client()
-        resp = client.post(self.url, data={"full_name": "No email"}, format="json")
+        resp = client.post(self.url, data={"full_name": "No contact"}, format="json")
         assert resp.status_code == 400
 
 

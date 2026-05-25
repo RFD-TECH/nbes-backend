@@ -136,14 +136,14 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"keycloak_sub\": \"aaaaaaaa-0000-0000-0000-000000000001\",\n  \"full_name\": \"Prof. Kwame Asante\",\n  \"title\": \"Prof.\",\n  \"post_nominals\": \"LLB, FCIArb\",\n  \"email\": \"k.asante@nbec.gov.gh\",\n  \"role\": \"member\",\n  \"instrument_ref\": \"INST/2026/001\",\n  \"appointment_date\": \"2026-01-01\",\n  \"tenure_end_date\": \"2029-12-31\",\n  \"is_voting_member\": true\n}"
+              "raw": "{\n  \"keycloak_sub\": \"aaaaaaaa-0000-0000-0000-000000000001\",\n  \"full_name\": \"Prof. Kwame Asante\",\n  \"title\": \"Prof.\",\n  \"post_nominals\": \"LLB, FCIArb\",\n  \"contact\": \"k.asante@nbec.gov.gh\",\n  \"designation\": \"member\",\n  \"instrument_ref\": \"INST/2026/001\",\n  \"tenure_start\": \"2026-01-01\",\n  \"tenure_end\": \"2029-12-31\"\n}"
             },
             "url": {
               "raw": "{{base_url}}/api/v1/nbec/members/",
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "nbec", "members", ""]
             },
-            "description": "Creates a new NBEC member in DRAFT status.\n\n**Required fields**: keycloak_sub, full_name, email, role, appointment_date\n**Roles**: chair | deputy_chair | member | secretary\n\nStatus 201 on success. Saves `member_id` to collection variables automatically."
+            "description": "Creates a new NBEC member in DRAFT status. The Keycloak/IAM user identified by `keycloak_sub` MUST already exist — IAM owns user creation, invites, MFA, and role grants.\n\n**Required fields**: keycloak_sub, full_name, contact, designation, tenure_start\n**Designations**: chair | deputy_chair | member\n\nStatus 201 on success. Saves `member_id` to collection variables automatically."
           }
         },
         {
@@ -153,7 +153,7 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"keycloak_sub\": \"bbbbbbbb-0000-0000-0000-000000000002\",\n  \"full_name\": \"Dr. Ama Owusu\",\n  \"title\": \"Dr.\",\n  \"email\": \"a.owusu@nbec.gov.gh\",\n  \"role\": \"chair\",\n  \"instrument_ref\": \"INST/2026/CHAIR\",\n  \"appointment_date\": \"2026-01-01\",\n  \"tenure_end_date\": \"2029-12-31\",\n  \"is_voting_member\": true\n}"
+              "raw": "{\n  \"keycloak_sub\": \"bbbbbbbb-0000-0000-0000-000000000002\",\n  \"full_name\": \"Dr. Ama Owusu\",\n  \"title\": \"Dr.\",\n  \"contact\": \"a.owusu@nbec.gov.gh\",\n  \"designation\": \"chair\",\n  \"instrument_ref\": \"INST/2026/CHAIR\",\n  \"tenure_start\": \"2026-01-01\",\n  \"tenure_end\": \"2029-12-31\"\n}"
             },
             "url": {
               "raw": "{{base_url}}/api/v1/nbec/members/",
@@ -596,7 +596,7 @@
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "nbec", "members", ""]
             },
-            "description": "Should return 400. Missing keycloak_sub, email, role, appointment_date."
+            "description": "Should return 400. Missing keycloak_sub, contact, designation, tenure_start."
           }
         },
         {

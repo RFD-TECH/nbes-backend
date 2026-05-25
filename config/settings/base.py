@@ -250,17 +250,9 @@ JWT_ALGORITHM = "HS256"
 # and NBES reads its system roles from resource_access[NBES_CLIENT_ID].roles.
 NBES_CLIENT_ID = os.environ.get("NBES_CLIENT_ID", "nbes-api")
 
-# Service-account credentials used by shared/keycloak_admin.py to call the
-# Keycloak Admin API (e.g. revoking roles on tenure expiry). The client must
-# have the realm-management "manage-users" and "manage-realm" service roles.
-KEYCLOAK_ADMIN_CLIENT_ID = os.environ.get(
-    "KEYCLOAK_ADMIN_CLIENT_ID",
-    os.environ.get("KEYCLOAK_CLIENT_ID_INTERNAL", ""),
-)
-KEYCLOAK_ADMIN_CLIENT_SECRET = os.environ.get(
-    "KEYCLOAK_ADMIN_CLIENT_SECRET",
-    os.environ.get("KEYCLOAK_CLIENT_SECRET_INTERNAL", ""),
-)
+# NBES does NOT call the Keycloak Admin API. Identity management (user
+# creation, role grants/revocations, MFA, invites) is owned by IAM (AMS).
+# NBES interacts with IAM via published domain events and IAM-issued JWTs.
 KEYCLOAK_VALID_AUDIENCES = [
     value.strip()
     for value in os.environ.get(
@@ -308,6 +300,11 @@ EDGE_SECURITY_EVENT_RETENTION_DAYS = int(
 SYSTEM_20_WEBHOOK_SECRET = os.environ.get("SYSTEM_20_WEBHOOK_SECRET", "")
 SYSTEM_21_URL = os.environ.get("SYSTEM_21_URL", "")
 SYSTEM_21_API_KEY = os.environ.get("SYSTEM_21_API_KEY", "")
+
+# System 05 — Regulator's tamper-evident archive (SRS §2.2.5). NBES archives
+# signed Minutes here within 1 hour of Chair sign-off.
+SYSTEM_05_URL = os.environ.get("SYSTEM_05_URL", "")
+SYSTEM_05_API_KEY = os.environ.get("SYSTEM_05_API_KEY", "")
 NLEMS_URL = os.environ.get("NLEMS_URL", "")
 NLEMS_API_KEY = os.environ.get("NLEMS_API_KEY", "")
 # System 14 Integration Settings

@@ -15,15 +15,17 @@ from .models import (
 # ── NBECMember ────────────────────────────────────────────────────────────────
 
 class NBECMemberSerializer(serializers.ModelSerializer):
+    is_active = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = NBECMember
         fields = [
             "id", "keycloak_sub", "full_name", "title", "post_nominals",
-            "email", "role", "status", "instrument_ref", "appointment_date",
-            "tenure_end_date", "photo_ref", "is_active", "is_voting_member",
+            "contact", "designation", "status", "instrument_ref", "tenure_start",
+            "tenure_end", "photo_ref", "is_active",
             "created_at", "updated_at",
         ]
-        read_only_fields = ["id", "status", "created_at", "updated_at"]
+        read_only_fields = ["id", "status", "is_active", "created_at", "updated_at"]
 
 
 class NBECMemberCreateSerializer(serializers.ModelSerializer):
@@ -31,19 +33,38 @@ class NBECMemberCreateSerializer(serializers.ModelSerializer):
         model = NBECMember
         fields = [
             "keycloak_sub", "full_name", "title", "post_nominals",
-            "email", "role", "instrument_ref", "appointment_date",
-            "tenure_end_date", "photo_ref", "is_voting_member",
+            "contact", "designation", "instrument_ref", "tenure_start",
+            "tenure_end", "photo_ref",
         ]
+
+    def validate(self, attrs):
+        tenure_start = attrs.get("tenure_start")
+        tenure_end = attrs.get("tenure_end")
+        # SRS §2.7: "Tenure end > tenure start"
+        if tenure_start and tenure_end and tenure_end <= tenure_start:
+            raise serializers.ValidationError(
+                {"tenure_end": "tenure_end must be strictly after tenure_start."}
+            )
+        return attrs
 
 
 class NBECMemberAmendSerializer(serializers.ModelSerializer):
     class Meta:
         model = NBECMember
         fields = [
-            "full_name", "title", "post_nominals", "email", "role",
-            "instrument_ref", "appointment_date", "tenure_end_date",
-            "photo_ref", "is_voting_member",
+            "full_name", "title", "post_nominals", "contact", "designation",
+            "instrument_ref", "tenure_start", "tenure_end",
+            "photo_ref",
         ]
+
+    def validate(self, attrs):
+        tenure_start = attrs.get("tenure_start", getattr(self.instance, "tenure_start", None))
+        tenure_end = attrs.get("tenure_end", getattr(self.instance, "tenure_end", None))
+        if tenure_start and tenure_end and tenure_end <= tenure_start:
+            raise serializers.ValidationError(
+                {"tenure_end": "tenure_end must be strictly after tenure_start."}
+            )
+        return attrs
 
 
 # ── ConflictDeclaration ───────────────────────────────────────────────────────
