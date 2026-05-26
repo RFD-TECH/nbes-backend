@@ -1,4 +1,4 @@
-"""apps/audit/tasks.py — Outbox poller, daily anchors, and SecOps jobs."""
+"""Outbox poller, daily anchors, and SecOps jobs."""
 from __future__ import annotations
 
 import logging
@@ -7,6 +7,8 @@ from datetime import datetime, time, timedelta, timezone as py_timezone
 from celery import shared_task
 from django.db import transaction
 from django.utils import timezone
+
+from shared.integrations import call_system_17
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +46,7 @@ def _publish_local_dev(event) -> None:
 
 def _publish_via_system_17(event) -> None:
     """Production publish via System 17."""
-    from shared.integrations import call_system_17
+    correlation_id_val = str(event.request_id) if event.request_id else str(event.correlation_id)
 
     response = call_system_17(
         endpoint=f"/v1/events/{event.topic}",
@@ -52,11 +54,13 @@ def _publish_via_system_17(event) -> None:
             "event_name": event.event_name,
             "topic": event.topic,
             "payload": event.payload,
-            "correlation_id": str(event.correlation_id),
+            "correlation_id": correlation_id_val,
             "occurred_at": event.created_at.isoformat(),
         },
         idempotency_key=str(event.correlation_id),
-        correlation_id=str(event.correlation_id),
+        correlation_id=correlation_id_val,
+        traceparent=getattr(event, "traceparent", "") or "",
+        tracestate=getattr(event, "tracestate", "") or "",
     )
     if not response.ok:
         raise RuntimeError(
@@ -194,3 +198,32 @@ def _resolve_target_date(target_date):
     if hasattr(target_date, "isoformat") and not isinstance(target_date, str):
         return target_date
     return datetime.fromisoformat(target_date).date()
+
+
+@shared_task(name="apps.audit.tasks.precreate_audit_partitions", queue="outbox")
+def precreate_audit_partitions():
+    """
+    Celery task that runs to precreate the PostgreSQL partition for the next calendar year.
+    Only executes if the database is PostgreSQL.
+    """
+    from django.db import connection
+    if connection.vendor != "postgresql":
+        logger.info("precreate_audit_partitions: skipped on non-postgresql database")
+        return {"status": "skipped", "reason": "not postgresql"}
+
+    current_year = datetime.now(py_timezone.utc).year
+    next_year = current_year + 1
+    partition_name = f"audit_auditevent_y{next_year}"
+    start_date = f"{next_year}-01-01 00:00:00+00"
+    end_date = f"{next_year + 1}-01-01 00:00:00+00"
+
+    sql = f"""
+        CREATE TABLE IF NOT EXISTS {partition_name}
+        PARTITION OF audit_auditevent
+        FOR VALUES FROM ('{start_date}') TO ('{end_date}');
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(sql)
+
+    logger.info("precreate_audit_partitions: ensured partition %s exists", partition_name)
+    return {"status": "success", "partition": partition_name}

@@ -1,14 +1,15 @@
 """
-shared/integrations/system22.py — System 22 (SIEM / tamper-evident audit store) client.
+System 22 (SIEM / tamper-evident audit store) client.
 
-Used by:
-  - apps/audit/tasks.py  → export_daily_audit_anchor  (daily at 01:00 UTC)
-  - apps/users/views.py  → auth event forwarding (AUTH_FAILED, IP_BLOCKED, etc.)
+NOTE: Direct calls to System 22 via this client are legacy/deprecated.
+Consolidated integration pattern: all security, audit,
+and anchor events now flow through the transactional outbox (OutboxEvent)
+and are relayed via System 17 to the Kafka event bus.
 
-In dev (SYSTEM_22_URL not configured): logs the call, returns a stub reference.
-
-Reference: NBES Architecture §1.2.8 — System 22 integration patterns
+This file is preserved as an integration reference for webhook receivers or direct
+SIEM escalation if outbox-based delivery is bypassed in future hardening sprints.
 """
+
 import json
 import logging
 import uuid
@@ -47,7 +48,9 @@ class System22Client:
             stub_ref = f"S22-DEV-{date}-{uuid.uuid4().hex[:8].upper()}"
             logger.info(
                 "System22 [DEV STUB] export_audit_anchor date=%s head_hash=%s ref=%s",
-                date, head_hash, stub_ref,
+                date,
+                head_hash,
+                stub_ref,
             )
             return stub_ref
 
@@ -75,7 +78,8 @@ class System22Client:
         if self._dev_mode:
             logger.info(
                 "System22 [DEV STUB] send_security_event type=%s payload=%s",
-                event_type, json.dumps(body),
+                event_type,
+                json.dumps(body),
             )
             return
 

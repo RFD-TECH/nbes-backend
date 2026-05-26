@@ -12,7 +12,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        # Gap 2: Add assigned_reviewer_id FK to Item (SRS-NBE-F02-04).
+        # Add assigned_reviewer_id FK to Item (SRS-NBE-F02-04).
         migrations.AddField(
             model_name="item",
             name="assigned_reviewer_id",
@@ -24,7 +24,7 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        # Gap 1: Add MetadataSchema model (SRS-NBE-F02-02).
+        # Add MetadataSchema model (SRS-NBE-F02-02).
         migrations.CreateModel(
             name="MetadataSchema",
             fields=[

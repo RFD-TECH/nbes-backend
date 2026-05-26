@@ -173,12 +173,12 @@ implemented before their respective features are shippable:
 | `has_sufficient_panel_votes` | itembank | Count `ItemPanelVote` records — 2 of 3 votes required |
 | `no_active_conflict` | itembank / marking | Check `ConflictDeclaration` for actor vs item/script subject |
 | `is_moderation_panel_member` | itembank | Check actor role from thread-local request |
-| `nlems_eligibility_verified` | registration | Reads `candidate.eligibility_status == "eligible"` — ✅ implemented |
-| `payment_confirmed` | registration | Reads `registration.payment_confirmed` — ✅ implemented |
-| `ai_scoring_complete` | marking | Reads `marking_decision.ai_mark` — ✅ implemented |
+| `nlems_eligibility_verified` | registration | Reads `candidate.eligibility_status == "eligible"` —implemented |
+| `payment_confirmed` | registration | Reads `registration.payment_confirmed` —implemented |
+| `ai_scoring_complete` | marking | Reads `marking_decision.ai_mark` —implemented |
 | `is_borderline` | marking | Reads `script.borderline_flagged` — set by borderline engine task |
 | `no_moderator_conflict` | marking | Check `ConflictDeclaration` for moderator vs candidate |
-| `has_justification` | marking | Word-count check on `marking_decision.justification` — ✅ implemented |
+| `has_justification` | marking | Word-count check on `marking_decision.justification` —implemented |
 | `reconciliation_required` | marking | Reads `script.reconciliation_required` — set by moderation service |
 | `below_attempt_limit` | resit | Check `AttemptCounter` for candidate + paper vs §73 limit |
 
@@ -409,68 +409,89 @@ skeletons so the navigation IA is stable from day one.
 - **Administrator**: users, roles, integrations, audit, system health
 - **Auditor**: audit-trail search, hash-chain verification, export
 
-#### 1.3 Data Model (Phase 1)
+#### 1.3 Data Model (Phase 1 — IAM-Aligned)
+
+> **Architecture note:** NBES delegates authentication, MFA, password policy, and session
+> management to the central IAM (System 19 / Keycloak). The data model below reflects only
+> what NBES owns locally. Password, MFA, session, and login_attempt tables live in IAM.
 
 ```
-user                — id (UUID PK), email (unique, case-insensitive), first_name, last_name,
-                      status (active/inactive/locked), mfa_enrolled (bool),
-                      password_hash, password_changed_at, created_by (FK user),
-                      created_at, deactivated_at
+user_profile        — id (UUID PK), keycloak_sub (UUID, unique, nullable),
+                      email (unique, case-insensitive), first_name, last_name,
+                      status (pending_invite/active/inactive),
+                      metadata (JSON — national_id, department, phone, etc.),
+                      created_by (FK user_profile), deactivated_at,
+                      created_at, updated_at
 
-user_role           — user_id (FK), role_id (FK), effective_from, effective_to,
-                      assigned_by (FK user)
+user_role           — id (UUID), user_id (FK), role_id (FK), effective_from, effective_to,
+                      assigned_by (FK user_profile), revoked_at, revoke_reason,
+                      created_at
+                      UNIQUE(user, role) WHERE revoked_at IS NULL
 
-role                — id, name, description, is_internal (bool)
-
-permission          — id, scope, resource, action
-
-role_permission     — role_id (FK), permission_id (FK)
-
-mfa_enrolment       — user_id (FK), factor_type [totp|webauthn|sms],
-                      credential_ref, last_used_at
-
-login_attempt       — id, user_id (nullable), ip, user_agent, outcome
-                      (success|failed_password|failed_mfa|locked|throttled),
+role_change_event   — id (UUID), user_id (FK), role_id (FK),
+                      change_type (assign/revoke), actor_id (FK), reason,
                       occurred_at
+                      (immutable event-sourced log — current roles are a projection)
 
-session             — id, user_id (FK), issued_at, expires_at, mfa_verified_at,
-                      revoked_at, ip
+role                — id (UUID), name (unique), description, is_internal (bool),
+                      is_active (bool), version (int), created_at, updated_at
 
-audit_event         — id, ts, actor_id, action, entity_type, entity_id, before, after,
-                      ip, user_agent, request_id, source_system, correlation_id,
-                      chain_hash (SHA-256 of prev_hash + event payload), created_at
+permission          — id (UUID), codename (unique), description, created_at
 
-daily_hash_anchor   — date, head_hash, exported_to_s22_at, anchor_ref
+role_permission     — id (UUID), role_id (FK), permission_id (FK), granted_by (UUID),
+                      created_at.  UNIQUE(role, permission)
 
-password_history    — user_id (FK), password_hash, created_at
-                      (retain last 12 per user for reuse blocking)
+mutual_exclusion    — id (UUID), role_a (FK), role_b (FK), description, created_at
+                      UNIQUE(role_a, role_b)
 
-bulk_import_record  — id, file_hash (SHA-256), file_ref (object storage path),
+role_assignment_approval — id (UUID), user_id (FK), role_id (FK),
+                      requested_by (FK), approved_by (FK nullable),
+                      approved_at, status (pending/approved/rejected),
+                      effective_from, reject_reason, created_at
+
+audit_event         — (already implemented — append-only, SHA-256 chain hash)
+
+daily_hash_anchor   — (already implemented — date, head_hash, exported_to_s22_at)
+
+security_event      — (already implemented — SIEM-aligned taxonomy)
+
+outbox_event        — (already implemented — transactional outbox)
+
+bulk_import_record  — id (UUID), file_hash (SHA-256), file_ref (object storage path),
                       total_rows, success_count, error_count, error_report (JSON),
-                      imported_by (FK user), imported_at
+                      imported_by (FK user_profile), created_at
 ```
 
 **Note:** The existing `UserProfile` in `apps/users/models.py` is boilerplate only. The full
-`user` model above replaces it entirely with status, MFA, password history, and lifecycle
-fields required by Phase 1.
+`user_profile` model above replaces it with status, metadata, and lifecycle fields.
+No `password_hash`, `mfa_enrolment`, `login_attempt`, or `session` tables — those live in IAM.
 
-#### 1.4 API Endpoints (Phase 1)
+#### 1.4 API Endpoints (Phase 1 — IAM-Aligned)
+
+> **Removed:** `auth/login`, `auth/mfa`, `auth/refresh`, `auth/logout` — these are IAM
+> (System 19) endpoints accessed via the API Gateway (System 17). NBES does not implement
+> authentication endpoints.
 
 | Method | Endpoint | Auth | Purpose |
 |--------|----------|------|---------|
-| `POST` | `/api/v1/auth/login` | Public (rate-limited) | Username/password authentication |
-| `POST` | `/api/v1/auth/mfa` | Authenticated | MFA challenge / response |
-| `POST` | `/api/v1/auth/refresh` | Refresh token | Token refresh |
-| `POST` | `/api/v1/auth/logout` | Authenticated | Revoke session |
-| `POST` | `/api/v1/admin/users` | Administrator | Create user account |
-| `PATCH` | `/api/v1/admin/users/{id}` | Administrator | Edit / deactivate / delete |
-| `POST` | `/api/v1/admin/users/import` | Administrator | Bulk import via CSV/Excel |
-| `POST` | `/api/v1/admin/users/{id}/roles` | Administrator | Assign / revoke role |
-| `GET` | `/api/v1/admin/roles` | Administrator | List roles and permission matrix |
-| `POST` | `/api/v1/admin/roles/{id}/permissions` | Administrator | Update role permissions |
-| `GET` | `/api/v1/audit/search` | Auditor / DG / Administrator | Search audit trail |
-| `GET` | `/api/v1/audit/chain/{date}` | Auditor | Hash-chain proof for a date |
-| `GET` | `/api/v1/me` | Authenticated | Current user profile and effective permissions |
+| `GET` | `/api/v1/admin/users` | `users:manage` | List user profiles (paginated, filtered) |
+| `POST` | `/api/v1/admin/users` | `users:manage` | Create user profile (provisions in IAM) |
+| `GET` | `/api/v1/admin/users/{id}` | `users:manage` | Get user profile detail |
+| `PATCH` | `/api/v1/admin/users/{id}` | `users:manage` | Edit / deactivate / delete |
+| `POST` | `/api/v1/admin/users/import` | `users:import` | Bulk import via CSV/Excel |
+| `POST` | `/api/v1/admin/users/bulk-assign-roles` | `users:manage` | Bulk role assignment |
+| `GET` | `/api/v1/admin/users/{id}/roles` | `users:manage` | List user's active roles |
+| `POST` | `/api/v1/admin/users/{id}/roles` | `users:manage` | Assign role |
+| `DELETE` | `/api/v1/admin/users/{id}/roles/{role}` | `users:manage` | Revoke role |
+| `GET` | `/api/v1/admin/role-approvals` | `rbac:manage` | List pending high-privilege approvals |
+| `POST` | `/api/v1/admin/role-approvals/{id}/approve` | `rbac:manage` | Approve role assignment |
+| `POST` | `/api/v1/admin/role-approvals/{id}/reject` | `rbac:manage` | Reject role assignment |
+| `GET` | `/api/v1/admin/rbac/roles` | `rbac:manage` | List roles + permission matrix |
+| `PUT` | `/api/v1/admin/rbac/roles/{id}/permissions` | `rbac:manage` | Update role permissions |
+| `GET` | `/api/v1/audit/search` | `audit:search` | Search audit trail |
+| `GET` | `/api/v1/audit/chain/{date}` | `audit:verify` | Hash-chain proof for a date |
+| `GET` | `/api/v1/audit/export` | `audit:export` | Streamed NDJSON export |
+| `GET` | `/api/v1/me` | Authenticated | Current user profile + effective permissions |
 
 #### 1.5 End-to-End Workflows
 
@@ -519,25 +540,30 @@ fields required by Phase 1.
 - Make the role/permission matrix versioned and exportable. Future audits will ask 'what
   permissions did this user have on date X?' — answerable only if the matrix is versioned.
 
-#### 1.8 Sprint Goals
+#### 1.8 Sprint Goals (IAM-Aligned)
 
-**Sprint 1.1 — Identity & MFA Core (Week 1):**
-- identity-service stood up with email/password auth, password policy, account lifecycle.
-- MFA via TOTP and WebAuthn; session management with refresh tokens.
-- Admin User Console MVP (`POST /api/v1/admin/users`, `PATCH /api/v1/admin/users/{id}`).
+**Sprint 1.1 — IAM Bridge & User Profile Store (Week 1):**
+- Expand `UserProfile` model with lifecycle states, metadata, created_by.
+- Create `UserRole` join table with effective dates and `RoleChangeEvent` event sourcing.
+- Expand IAM bridge (`keycloak_admin.py`) with create/deactivate/assign user functions.
+- Admin User Console MVP (`POST/PATCH/GET /api/v1/admin/users`, role assignment).
+- Unified `GET /api/v1/me` endpoint.
 
 **Sprint 1.2 — Roles, Permissions & RBAC Gateway (Week 2):**
-- role-service and the role/permission matrix; mutual-exclusion rules; high-privilege two-approver flow.
-- authz-gateway as the central policy decision point; UI controls and API endpoints wired through it.
+- Full permission codename catalog (30+ codenames, 15 roles).
+- Mutual-exclusion rules model and enforcement.
+- Two-admin approval flow for high-privilege roles.
+- Step-up MFA policy enforcement (checking gateway `x-acr` / `x-mfa-verified` headers).
 - Bulk import flow for centre cohorts (`POST /api/v1/admin/users/import`).
+- Update RBAC resolver to use `UserRole` table as authoritative source.
 
-**Sprint 1.3 — Audit Substrate, Security Ops & Integration Patterns (Week 3):**
-- audit-platform with append-only store and daily hash chain to System 22.
-- Security Operations: failed-auth dashboard, throttle list, anomaly review.
-- System 17 integration substrate (signed payloads, replay protection, outbox-relay library).
-- Role Dashboard Skeletons for every role.
-- End-to-end demo: Admin onboards a Moderator, RBAC blocks an Examiner-only action,
-  an audit chain export is verified externally.
+**Sprint 1.3 — Integration Polish, Dashboards & Hardening (Week 3):**
+- Consolidate duplicate System 17 clients and dashboard implementations.
+- Add missing 10B role dashboard panels (Remote Proctor, DTI Ops, Service Desk, DG).
+- Verify append-only DB trigger on AuditEvent.
+- Fix request_id → correlation_id threading.
+- Machine-token authentication path for service-to-service calls.
+- Wire notification bridge for profile provisioning confirmations.
 
 #### 1.9 Implementation Priorities
 
@@ -572,16 +598,17 @@ fields required by Phase 1.
   then independent verification with the published public key succeeds for every day in the
   retention window.
 
-#### 1.11 Backend Services (Phase 1)
+#### 1.11 Backend Services (Phase 1 — IAM-Aligned)
 
 | Service | Responsibility |
 |---------|---------------|
-| `identity-service` | Accounts, MFA, session management, password policy enforcement |
-| `role-service` | Role and permission matrix, mutual-exclusion rules, role-change events |
-| `authz-gateway` | Central policy decision point invoked at every API call; emits decisions to audit |
-| `audit-platform` | Append-only event store, daily hash chain, integrity job, search API |
-| `integration-substrate` | System 17 client (signed, replay-protected), outbox-relay library, standard error envelope |
-| `notification-bridge` | Invite emails, lockout notifications, password-reset emails (calls System 21 directly) |
+| `iam-bridge` | Typed client for IAM admin API (create/deactivate/assign user) with retry, idempotency, audit logging. IAM owns auth, MFA, sessions, passwords. |
+| `profile-store` | Local user profile CRUD with lifecycle states, metadata, created_by tracking |
+| `role-service` | Role/permission matrix, UserRole join table, mutual-exclusion rules, two-approver flow, role-change events |
+| `authz-gateway` | Central policy decision point (RBAC + step-up MFA enforcement); emits decisions to audit |
+| `audit-platform` | Append-only event store, daily hash chain, integrity job, search API (already implemented) |
+| `integration-substrate` | System 17 client, outbox-relay, standard error envelope (already implemented) |
+| `notification-bridge` | Profile provisioning confirmations via System 21 (light — full fabric in Phase 9) |
 
 #### 1.12 Screens, Dashboards & UI Inventory
 
