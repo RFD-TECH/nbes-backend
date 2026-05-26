@@ -5,6 +5,8 @@ emits an AuditEvent and invalidates the in-process role cache so the
 change takes effect within 60 s for every NBES node.
 """
 
+import logging
+
 from django.db import transaction
 from drf_spectacular.utils import (
     OpenApiExample,
@@ -47,6 +49,7 @@ from .serializers import (
     UserRoleSerializer,
 )
 
+logger = logging.getLogger(__name__)
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -1795,6 +1798,16 @@ class BulkUserImportView(APIView):
                         },
                     )
             except Exception as exc:
+                # IAM user was already provisioned; roll it back so we don't
+                # leave an orphaned Keycloak account with no local profile.
+                if iam_sub:
+                    try:
+                        keycloak_admin.deactivate_user(iam_sub)
+                    except Exception as iam_exc:
+                        logger.warning(
+                            "bulk_import: IAM rollback failed for sub=%s: %s",
+                            iam_sub, iam_exc,
+                        )
                 row_errors.append(
                     {"row": i, "email": email, "errors": [f"DB error: {exc}"]}
                 )

@@ -303,12 +303,15 @@ def assign_client_role(user_sub: str, role_name: str) -> None:
     client_id = _nbes_client_id()
     client_uuid = _get_client_uuid(client_id)
 
-    # Fetch role representation
-    role_resp = requests.get(
-        f"{admin_base}/clients/{client_uuid}/roles/{role_name}",
-        headers=_auth_headers(),
-        timeout=10,
-    )
+    # Fetch role representation (with retry for transient 5xx)
+    def _fetch_role():
+        return requests.get(
+            f"{admin_base}/clients/{client_uuid}/roles/{role_name}",
+            headers=_auth_headers(),
+            timeout=10,
+        )
+
+    role_resp = _execute_with_retry(_fetch_role)
     if role_resp.status_code == 404:
         logger.warning(
             "keycloak_admin: client role %r not found — cannot assign to user %s",
@@ -349,12 +352,15 @@ def remove_client_role(user_sub: str, role_name: str) -> None:
     client_id = _nbes_client_id()
     client_uuid = _get_client_uuid(client_id)
 
-    # Fetch role representation
-    role_resp = requests.get(
-        f"{admin_base}/clients/{client_uuid}/roles/{role_name}",
-        headers=_auth_headers(),
-        timeout=10,
-    )
+    # Fetch role representation (with retry for transient 5xx)
+    def _fetch_role():
+        return requests.get(
+            f"{admin_base}/clients/{client_uuid}/roles/{role_name}",
+            headers=_auth_headers(),
+            timeout=10,
+        )
+
+    role_resp = _execute_with_retry(_fetch_role)
     if role_resp.status_code == 404:
         logger.warning(
             "keycloak_admin: client role %r not found — nothing to revoke for user %s",

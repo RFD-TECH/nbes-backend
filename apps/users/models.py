@@ -19,7 +19,7 @@ Three RBAC tables:
   REQ-F000-02 calls "configurable".
 """
 import uuid
-from django.db import models
+from django.db import models, transaction
 
 
 class UserProfile(models.Model):
@@ -322,7 +322,7 @@ class RoleAssignmentApproval(models.Model):
         if self.expires_at and self.expires_at < _tz.now():
             raise ValueError("Cannot approve an expired request.")
 
-        with __import__("django.db", fromlist=["transaction"]).transaction.atomic():
+        with transaction.atomic():
             user_role = UserRole.objects.create(
                 user=self.target_user,
                 role=self.role,

@@ -50,9 +50,17 @@ class PartitionTaskTests(TestCase):
         current_year = datetime.now(py_timezone.utc).year
         next_year = current_year + 1
 
+        # Simulate audit_auditevent being a partitioned table
+        mock_cursor.return_value.__enter__.return_value.fetchone.return_value = (1,)
+
         result = precreate_audit_partitions.run()
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["partition"], f"audit_auditevent_y{next_year}")
-        mock_cursor.assert_called_once()
-        mock_cursor.return_value.__enter__.return_value.execute.assert_called_once()
+        # cursor is used twice: once for partition check, once for CREATE TABLE
+        self.assertEqual(mock_cursor.call_count, 2)
+        execute_mock = mock_cursor.return_value.__enter__.return_value.execute
+        # Second execute call must be the CREATE TABLE ... PARTITION OF statement
+        create_sql_call = execute_mock.call_args_list[-1][0][0]
+        self.assertIn(f"audit_auditevent_y{next_year}", create_sql_call)
+        self.assertIn("PARTITION OF audit_auditevent", create_sql_call)

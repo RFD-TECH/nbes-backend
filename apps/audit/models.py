@@ -74,15 +74,10 @@ class AuditEvent(models.Model):
             )
         """
         if action in _STATE_CHANGE_ACTIONS and kwargs.get("old_state") is None:
-            from django.conf import settings
-            msg = (
+            raise ValueError(
                 f"audit.missing_old_state action={action} — callers must supply old_state "
                 "for state-change actions (blueprint §1.2.7)"
             )
-            if getattr(settings, "DEBUG", False):
-                raise ValueError(msg)
-            else:
-                logger.warning(msg)
         with transaction.atomic():
             return cls._record_atomic(action=action, **kwargs)
 

@@ -120,9 +120,9 @@ def unpartition_audit_event_postgresql(apps, schema_editor):
         );
     """)
 
-    # 4. Recreate index/constraint on event_id
+    # 4. Recreate index on event_id (non-unique to match forward migration)
     schema_editor.execute("""
-        CREATE UNIQUE INDEX audit_auditevent_event_id_key ON audit_auditevent (event_id);
+        CREATE INDEX audit_auditevent_event_id_idx ON audit_auditevent (event_id);
     """)
 
     # 5. Recreate index on entity_id

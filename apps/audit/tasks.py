@@ -211,6 +211,19 @@ def precreate_audit_partitions():
         logger.info("precreate_audit_partitions: skipped on non-postgresql database")
         return {"status": "skipped", "reason": "not postgresql"}
 
+    # Guard: only proceed if audit_auditevent is actually a partitioned table.
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT 1 FROM pg_partitioned_table pt "
+            "JOIN pg_class c ON c.oid = pt.partrelid "
+            "WHERE c.relname = 'audit_auditevent';"
+        )
+        if not cursor.fetchone():
+            logger.info(
+                "precreate_audit_partitions: skipped — audit_auditevent is not partitioned"
+            )
+            return {"status": "skipped", "reason": "parent_not_partitioned"}
+
     current_year = datetime.now(py_timezone.utc).year
     next_year = current_year + 1
     partition_name = f"audit_auditevent_y{next_year}"

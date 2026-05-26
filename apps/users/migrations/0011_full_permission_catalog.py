@@ -3,9 +3,6 @@
 Seeds the complete 25+ codename set required by SRS §1.2.2 and §2.3.
 Existing codenames are left untouched (idempotent get_or_create).
 
-Permission codename catalog is incomplete (only ~12 exist).
-Proctor/Invigilator codenames not seeded.
-
 Previously seeded (safe to ignore):
   rbac:manage, audit:search, audit:verify, audit:export,
   secops:view, dashboards:manage, paper:construct, item:search,
