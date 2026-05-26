@@ -174,52 +174,73 @@ def create_user(
         raise IntegrationError("Keycloak response missing Location header")
     user_uuid = location.rstrip("/").split("/")[-1]
 
-    # Step 2 — Assign roles if any
-    if roles:
-        client_id = _nbes_client_id()
-        client_uuid = _get_client_uuid(client_id)
-        role_reprs = []
-        for role_name in roles:
-            try:
-                role_resp = requests.get(
-                    f"{admin_base}/clients/{client_uuid}/roles/{role_name}",
+    try:
+        # Step 2 — Assign roles if any
+        if roles:
+            client_id = _nbes_client_id()
+            client_uuid = _get_client_uuid(client_id)
+            role_reprs = []
+            for role_name in roles:
+                try:
+                    role_resp = requests.get(
+                        f"{admin_base}/clients/{client_uuid}/roles/{role_name}",
+                        headers=_auth_headers(),
+                        timeout=10,
+                    )
+                    role_resp.raise_for_status()
+                    role_reprs.append(role_resp.json())
+                except requests.exceptions.HTTPError as exc:
+                    if exc.response is not None and exc.response.status_code == 404:
+                        logger.warning("Keycloak client role %s not found", role_name)
+                    else:
+                        raise
+
+            if role_reprs:
+
+                def _assign():
+                    m_resp = requests.post(
+                        f"{admin_base}/users/{user_uuid}/role-mappings/clients/{client_uuid}",
+                        json=role_reprs,
+                        headers=_auth_headers(),
+                        timeout=10,
+                    )
+                    m_resp.raise_for_status()
+
+                _execute_with_retry(_assign)
+
+        # Step 3 — Send actions email if requested
+        if send_invite:
+
+            def _invite():
+                inv_resp = requests.put(
+                    f"{admin_base}/users/{user_uuid}/execute-actions-email",
+                    json=["VERIFY_EMAIL", "UPDATE_PASSWORD"],
                     headers=_auth_headers(),
                     timeout=10,
                 )
-                role_resp.raise_for_status()
-                role_reprs.append(role_resp.json())
-            except requests.exceptions.HTTPError as exc:
-                if exc.response is not None and exc.response.status_code == 404:
-                    logger.warning("Keycloak client role %s not found", role_name)
-                else:
-                    raise
+                inv_resp.raise_for_status()
 
-        if role_reprs:
+            _execute_with_retry(_invite)
 
-            def _assign():
-                m_resp = requests.post(
-                    f"{admin_base}/users/{user_uuid}/role-mappings/clients/{client_uuid}",
-                    json=role_reprs,
-                    headers=_auth_headers(),
-                    timeout=10,
-                )
-                m_resp.raise_for_status()
-
-            _execute_with_retry(_assign)
-
-    # Step 3 — Send actions email if requested
-    if send_invite:
-
-        def _invite():
-            inv_resp = requests.put(
-                f"{admin_base}/users/{user_uuid}/execute-actions-email",
-                json=["VERIFY_EMAIL", "UPDATE_PASSWORD"],
+    except Exception:
+        # Compensating rollback: delete the partially-provisioned Keycloak user
+        # so NBES and Keycloak don't diverge.
+        def _delete_user():
+            del_resp = requests.delete(
+                f"{admin_base}/users/{user_uuid}",
                 headers=_auth_headers(),
                 timeout=10,
             )
-            inv_resp.raise_for_status()
+            del_resp.raise_for_status()
 
-        _execute_with_retry(_invite)
+        try:
+            _execute_with_retry(_delete_user)
+        except Exception:
+            logger.error(
+                "keycloak_admin: failed to rollback user %s after provisioning error",
+                user_uuid,
+            )
+        raise
 
     logger.info(
         "keycloak_admin: provisioned user %s (sub=%s) with roles=%s",

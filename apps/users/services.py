@@ -58,11 +58,10 @@ def create_user(
     Returns the created ``UserProfile`` instance.
     Raises ``ServiceError`` on IAM failure or validation errors.
     """
-    from apps.users.models import UserProfile, Role, UserRole, RoleChangeEvent
+    from apps.users.models import UserProfile, Role
     from apps.audit.models import AuditEvent
     from shared import keycloak_admin
     from shared.events import publish
-    from shared import rbac
 
     effective_date = effective_date or timezone.now().date()
     metadata = metadata or {}
@@ -111,24 +110,29 @@ def create_user(
         created_by=created_by,
     )
 
-    # Create role assignments
-    for role_obj in role_objects:
-        UserRole.objects.create(
-            user=user,
-            role=role_obj,
-            effective_from=effective_date,
-            assigned_by=created_by,
-        )
-        RoleChangeEvent.objects.create(
-            user=user,
-            role=role_obj,
-            change_type="assign",
-            actor=created_by,
-            reason="Admin provisioning",
-        )
-        rbac.invalidate_role(role_obj.name)
-    if keycloak_sub_val:
-        rbac.invalidate_user(str(keycloak_sub_val))
+    # Assign roles through assign_role() so mutual-exclusion and approval
+    # checks run for every role, including initial provisioning grants.
+    for role_name in roles:
+        try:
+            assign_role(
+                user=user,
+                role_name=role_name,
+                effective_from=effective_date,
+                assigned_by=created_by,
+                reason="Admin provisioning",
+                actor_id=actor_id,
+                request_id=request_id,
+                ip_address=ip_address,
+            )
+        except RoleApprovalPending as exc:
+            # High-privilege role queued for two-admin approval; user is still
+            # created and the approval row is committed.
+            logger.info(
+                "create_user: role=%s for user=%s queued for approval=%s",
+                role_name, user.id, exc.approval.id,
+            )
+        except ServiceError:
+            raise
 
     AuditEvent.record(
         actor_id=actor_id,
@@ -232,7 +236,7 @@ def assign_role(
     # otherwise roll it back).
     if role_name in HIGH_PRIVILEGE_ROLES:
         from datetime import timedelta
-        expires_at = timezone.now() + timedelta(days=7)
+        expires_at = timezone.now() + timedelta(hours=48)
         with transaction.atomic():
             approval = RoleAssignmentApproval.objects.create(
                 target_user=user,
@@ -467,8 +471,14 @@ def _check_committee_assignments(user) -> str | None:
                 ).exists()
             ):
                 return "active conflict-of-interest declarations"
-    except (ImportError, Exception):
-        pass
+    except ImportError:
+        return None
+    except Exception:
+        logger.exception(
+            "_check_committee_assignments: unexpected error for user=%s",
+            getattr(user, "keycloak_sub", None),
+        )
+        return "committee-check-failed"
     return None
 
 

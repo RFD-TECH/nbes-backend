@@ -56,6 +56,8 @@ class W3CTraceTests(TestCase):
 
         set_request_id(request_id)
         set_trace_context(traceparent, tracestate)
+        self.addCleanup(set_request_id, None)
+        self.addCleanup(set_trace_context, None, None)
 
         # Publish a mock event
         publish("TestEvent", {"foo": "bar"}, topic="nbes.test")

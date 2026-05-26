@@ -94,8 +94,15 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
     @extend_schema_field(UserRoleSerializer(many=True))
     def get_roles(self, obj):
-        # Only return active roles (not revoked)
-        active_roles = obj.user_roles.filter(revoked_at__isnull=True)
+        from django.utils import timezone
+        from django.db.models import Q
+        today = timezone.now().date()
+        active_roles = obj.user_roles.filter(
+            revoked_at__isnull=True,
+            effective_from__lte=today,
+        ).filter(
+            Q(effective_to__isnull=True) | Q(effective_to__gte=today)
+        )
         return UserRoleSerializer(active_roles, many=True).data
 
 

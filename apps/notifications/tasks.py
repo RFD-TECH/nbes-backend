@@ -7,10 +7,8 @@ On transient failure it retries with exponential backoff (max 3 attempts).
 from __future__ import annotations
 
 import logging
-import uuid
 
 from celery import shared_task
-from django.utils import timezone
 
 from .models import DeliveryLog, Notification
 
@@ -36,7 +34,7 @@ def deliver_notification(self, notification_id: str) -> None:
         return
 
     attempt_num = notification.retry_count + 1
-    idempotency_key = f"notif-{notification_id}-{attempt_num}"
+    idempotency_key = f"notif-{notification_id}"
 
     payload = {
         "notification_id": notification_id,
@@ -79,9 +77,17 @@ def deliver_notification(self, notification_id: str) -> None:
             notification_id, attempt_num, result.message,
         )
         if result.retryable:
-            raise self.retry(
-                exc=RuntimeError(result.message),
-                countdown=60 * (2 ** (attempt_num - 1)),
-            )
+            try:
+                raise self.retry(
+                    exc=RuntimeError(result.message),
+                    countdown=60 * (2 ** (attempt_num - 1)),
+                )
+            except self.MaxRetriesExceededError:
+                logger.error(
+                    "deliver_notification: max retries exhausted id=%s", notification_id
+                )
+                notification.status = Notification.Status.FAILED
+                notification.save(update_fields=["status", "updated_at"])
+                return
         notification.status = Notification.Status.FAILED
         notification.save(update_fields=["status", "updated_at"])

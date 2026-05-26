@@ -57,7 +57,7 @@ def _publish_via_system_17(event) -> None:
             "correlation_id": correlation_id_val,
             "occurred_at": event.created_at.isoformat(),
         },
-        idempotency_key=str(event.correlation_id),
+        idempotency_key=correlation_id_val,
         correlation_id=correlation_id_val,
         traceparent=getattr(event, "traceparent", "") or "",
         tracestate=getattr(event, "tracestate", "") or "",

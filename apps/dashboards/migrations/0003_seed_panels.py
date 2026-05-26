@@ -85,7 +85,7 @@ PANELS = [
 def seed_panels(apps, schema_editor):
     DashboardPanel = apps.get_model("dashboards", "DashboardPanel")
     for panel_key, panel_name, role_codename, display_order in PANELS:
-        DashboardPanel.objects.get_or_create(
+        DashboardPanel.objects.update_or_create(
             panel_key=panel_key,
             defaults={
                 "panel_name": panel_name,

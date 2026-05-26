@@ -235,6 +235,7 @@ class KeycloakJWTAuthentication(BaseAuthentication):
             RoleMutualExclusion,
         )
         from apps.audit.models import AuditEvent
+        from django.db import transaction
         from django.utils import timezone
 
         sub = payload.get("sub")
@@ -254,157 +255,162 @@ class KeycloakJWTAuthentication(BaseAuthentication):
 
         token_roles = get_nbes_role_names(payload)
 
-        # 1. Try keycloak_sub
-        user = UserProfile.objects.filter(keycloak_sub=sub).first()
+        with transaction.atomic():
+            # 1. Try keycloak_sub
+            user = UserProfile.objects.select_for_update().filter(keycloak_sub=sub).first()
 
-        # 2. Try email if keycloak_sub not set (user created by admin first)
-        if not user and email:
-            user = UserProfile.objects.filter(
-                email__iexact=email, keycloak_sub__isnull=True
-            ).first()
-            if user:
-                user.keycloak_sub = sub
-                user.status = "active"
-                if first_name and not user.first_name:
-                    user.first_name = first_name
-                if last_name and not user.last_name:
-                    user.last_name = last_name
-                user.save()
-                logger.info(
-                    "auth: mapped sub=%s to existing user by email=%s", sub, email
-                )
-
-        # 3. Fallback mirroring.
-        # Service-account tokens (client_credentials grant) are expected to
-        # auto-create a profile — that is the normal provisioning path for
-        # machine identities.  Human-user auto-creation is a warning because
-        # those profiles should be provisioned via POST /admin/users/ first.
-        if not user:
-            # Keycloak service accounts carry preferred_username =
-            # "service-account-<client-id>" and a non-empty "azp" claim.
-            preferred = payload.get("preferred_username", "")
-            is_service_account = preferred.startswith("service-account-") or bool(
-                payload.get("azp") and not email
-            )
-            client_id = payload.get("azp", "") or payload.get("clientId", "")
-
-            user_metadata: dict = {}
-            if is_service_account:
-                user_metadata = {
-                    "is_service_account": True,
-                    "client_id": client_id,
-                    "preferred_username": preferred,
-                }
-                display_name = preferred.replace("service-account-", "", 1)
-                user = UserProfile.objects.create(
-                    keycloak_sub=sub,
-                    email=email or f"{display_name}@service.internal",
-                    first_name=display_name,
-                    last_name="(service)",
-                    status="active",
-                    metadata=user_metadata,
-                )
-                logger.info(
-                    "auth: auto-created service-account profile sub=%s client_id=%s",
-                    sub,
-                    client_id,
-                )
-                AuditEvent.record(
-                    actor_id=sub,
-                    action="SERVICE_ACCOUNT_PROFILE_CREATED",
-                    entity_type="user",
-                    entity_id=str(user.id),
-                    new_state={"client_id": client_id, "status": "active"},
-                )
-            else:
-                user = UserProfile.objects.create(
-                    keycloak_sub=sub,
-                    email=email,
-                    first_name=first_name,
-                    last_name=last_name,
-                    status="active",
-                )
-                logger.warning(
-                    "auth.auto_profile_mirroring_warning: auto-created user profile "
-                    "for sub=%s, email=%s — profile should be pre-provisioned via admin API",
-                    sub,
-                    email,
-                )
-                AuditEvent.record(
-                    actor_id=sub,
-                    action="AUTO_PROFILE_CREATED",
-                    entity_type="user",
-                    entity_id=str(user.id),
-                    new_state={"email": email, "status": "active"},
-                )
-
-        # Sync active roles from token
-        today = timezone.now().date()
-        now_ts = timezone.now()
-
-        # Revoke active roles in DB that are not in the token
-        norm_token_roles = {r.lower().replace("-", "_") for r in token_roles}
-        active_db_roles = UserRole.objects.filter(user=user, revoked_at__isnull=True)
-        for ur in active_db_roles:
-            if ur.role.name not in norm_token_roles:
-                ur.revoked_at = now_ts
-                ur.revoke_reason = "Sync from JWT token (role removed in IAM)"
-                ur.save()
-                RoleChangeEvent.objects.create(
-                    user=user,
-                    role=ur.role,
-                    change_type="revoke",
-                    reason="Sync from JWT token (role removed in IAM)",
-                    occurred_at=now_ts,
-                )
-
-        # Add roles in token that are not in DB
-        for role_name in token_roles:
-            norm_name = role_name.lower().replace("-", "_")
-            role_obj = Role.objects.filter(name=norm_name, is_active=True).first()
-            if not role_obj:
-                logger.debug(
-                    "auth: skipping unrecognised role %s for sub=%s", norm_name, sub
-                )
-                continue
-
-            conflict = RoleMutualExclusion.check_conflict(user, role_obj)
-            if conflict:
-                logger.warning(
-                    "auth: skipping conflicting role %s for sub=%s (conflict with %s)",
-                    norm_name,
-                    sub,
-                    conflict,
-                )
-                try:
-                    from shared.secops import record_security_event
-
-                    record_security_event(
-                        category="role_conflict_in_jwt",
-                        actor_id=sub,
-                        indicators={
-                            "attempted_role": norm_name,
-                            "exclusion_rule_id": str(conflict.id),
-                            "reason": f"Mutual exclusion conflict with existing active role(s). Rule: {conflict}",
-                        },
+            # 2. Try email if keycloak_sub not set (user created by admin first)
+            if not user and email:
+                user = UserProfile.objects.select_for_update().filter(
+                    email__iexact=email, keycloak_sub__isnull=True
+                ).first()
+                if user:
+                    user.keycloak_sub = sub
+                    user.status = "active"
+                    if first_name and not user.first_name:
+                        user.first_name = first_name
+                    if last_name and not user.last_name:
+                        user.last_name = last_name
+                    user.save()
+                    logger.info(
+                        "auth: mapped sub=%s to existing user by email=%s", sub, email
                     )
-                except Exception:
-                    pass
-                continue
 
-            ur = UserRole.objects.filter(
-                user=user, role=role_obj, revoked_at__isnull=True
-            ).first()
-            if not ur:
-                UserRole.objects.create(
-                    user=user, role=role_obj, effective_from=today, created_at=now_ts
+            # 3. Fallback mirroring.
+            # Service-account tokens (client_credentials grant) are expected to
+            # auto-create a profile — that is the normal provisioning path for
+            # machine identities.  Human-user auto-creation is a warning because
+            # those profiles should be provisioned via POST /admin/users/ first.
+            if not user:
+                # Keycloak service accounts carry preferred_username =
+                # "service-account-<client-id>" and a non-empty "azp" claim.
+                preferred = payload.get("preferred_username", "")
+                is_service_account = preferred.startswith("service-account-") or bool(
+                    payload.get("azp") and not email
                 )
-                RoleChangeEvent.objects.create(
-                    user=user,
-                    role=role_obj,
-                    change_type="assign",
-                    reason="Auto-sync from JWT token",
-                    occurred_at=now_ts,
-                )
+                client_id = payload.get("azp", "") or payload.get("clientId", "")
+
+                user_metadata: dict = {}
+                if is_service_account:
+                    user_metadata = {
+                        "is_service_account": True,
+                        "client_id": client_id,
+                        "preferred_username": preferred,
+                    }
+                    display_name = preferred.replace("service-account-", "", 1)
+                    user = UserProfile.objects.create(
+                        keycloak_sub=sub,
+                        email=email or f"{display_name}@service.internal",
+                        first_name=display_name,
+                        last_name="(service)",
+                        status="active",
+                        metadata=user_metadata,
+                    )
+                    logger.info(
+                        "auth: auto-created service-account profile sub=%s client_id=%s",
+                        sub,
+                        client_id,
+                    )
+                    AuditEvent.record(
+                        actor_id=sub,
+                        action="SERVICE_ACCOUNT_PROFILE_CREATED",
+                        entity_type="user",
+                        entity_id=str(user.id),
+                        new_state={"client_id": client_id, "status": "active"},
+                    )
+                else:
+                    if not email:
+                        raise AuthenticationFailed(
+                            "Human-user token must contain an email claim."
+                        )
+                    user = UserProfile.objects.create(
+                        keycloak_sub=sub,
+                        email=email,
+                        first_name=first_name,
+                        last_name=last_name,
+                        status="active",
+                    )
+                    logger.warning(
+                        "auth.auto_profile_mirroring_warning: auto-created user profile "
+                        "for sub=%s, email=%s — profile should be pre-provisioned via admin API",
+                        sub,
+                        email,
+                    )
+                    AuditEvent.record(
+                        actor_id=sub,
+                        action="AUTO_PROFILE_CREATED",
+                        entity_type="user",
+                        entity_id=str(user.id),
+                        new_state={"email": email, "status": "active"},
+                    )
+
+            # Sync active roles from token
+            today = timezone.now().date()
+            now_ts = timezone.now()
+
+            # Revoke active roles in DB that are not in the token
+            norm_token_roles = {r.lower().replace("-", "_") for r in token_roles}
+            active_db_roles = UserRole.objects.filter(user=user, revoked_at__isnull=True)
+            for ur in active_db_roles:
+                if ur.role.name not in norm_token_roles:
+                    ur.revoked_at = now_ts
+                    ur.revoke_reason = "Sync from JWT token (role removed in IAM)"
+                    ur.save()
+                    RoleChangeEvent.objects.create(
+                        user=user,
+                        role=ur.role,
+                        change_type="revoke",
+                        reason="Sync from JWT token (role removed in IAM)",
+                        occurred_at=now_ts,
+                    )
+
+            # Add roles in token that are not in DB
+            for role_name in token_roles:
+                norm_name = role_name.lower().replace("-", "_")
+                role_obj = Role.objects.filter(name=norm_name, is_active=True).first()
+                if not role_obj:
+                    logger.debug(
+                        "auth: skipping unrecognised role %s for sub=%s", norm_name, sub
+                    )
+                    continue
+
+                conflict = RoleMutualExclusion.check_conflict(user, role_obj)
+                if conflict:
+                    logger.warning(
+                        "auth: skipping conflicting role %s for sub=%s (conflict with %s)",
+                        norm_name,
+                        sub,
+                        conflict,
+                    )
+                    try:
+                        from shared.secops import record_security_event
+
+                        record_security_event(
+                            category="role_conflict_in_jwt",
+                            actor_id=sub,
+                            indicators={
+                                "attempted_role": norm_name,
+                                "exclusion_rule_id": str(conflict.id),
+                                "reason": f"Mutual exclusion conflict with existing active role(s). Rule: {conflict}",
+                            },
+                        )
+                    except Exception:
+                        pass
+                    continue
+
+                ur = UserRole.objects.filter(
+                    user=user, role=role_obj, revoked_at__isnull=True
+                ).first()
+                if not ur:
+                    UserRole.objects.create(
+                        user=user, role=role_obj, effective_from=today, created_at=now_ts
+                    )
+                    RoleChangeEvent.objects.create(
+                        user=user,
+                        role=role_obj,
+                        change_type="assign",
+                        reason="Auto-sync from JWT token",
+                        occurred_at=now_ts,
+                    )
 
         return user

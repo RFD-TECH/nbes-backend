@@ -909,110 +909,114 @@ class AdminUserDetailView(APIView):
             404: _error_envelope("UserUpdateNotFoundError"),
         },
     )
-    @transaction.atomic
     def patch(self, request, pk):
         from apps.users.models import UserProfile, UserRole
         from shared import keycloak_admin
         from django.utils import timezone
         from shared.events import publish
 
-        try:
-            user = UserProfile.objects.select_for_update().get(pk=pk)
-        except UserProfile.DoesNotExist:
-            return _error_response(
-                "NOT_FOUND",
-                "User profile not found.",
-                status.HTTP_404_NOT_FOUND,
-                getattr(request, "request_id", ""),
-            )
+        serializer_data = request.data
 
-        serializer = UserProfileUpdateSerializer(user, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-
-        old_state = {
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "email": user.email,
-            "status": user.status,
-            "metadata": user.metadata,
-        }
-
-        # Check deactivation/delete
-        deactivate = False
-        if (
-            serializer.validated_data.get("status") == "inactive"
-            and user.status != "inactive"
-        ):
-            deactivate = True
-        if (
-            serializer.validated_data.get("deleted") is True
-            and user.status != "inactive"
-        ):
-            deactivate = True
-
-        if deactivate:
-            # Check open active assignments across all modules .
-            from apps.users.services import has_active_assignments
-            blocking_reasons = has_active_assignments(user)
-            if blocking_reasons:
-                reasons_str = " and ".join(blocking_reasons)
+        with transaction.atomic():
+            try:
+                user = UserProfile.objects.select_for_update().get(pk=pk)
+            except UserProfile.DoesNotExist:
                 return _error_response(
-                    "USER_HAS_ACTIVE_ASSIGNMENTS",
-                    f"Cannot deactivate this profile: user has {reasons_str}. "
-                    "Reassign or close them before deactivating.",
-                    status.HTTP_400_BAD_REQUEST,
+                    "NOT_FOUND",
+                    "User profile not found.",
+                    status.HTTP_404_NOT_FOUND,
                     getattr(request, "request_id", ""),
                 )
 
-            # Deactivate in Keycloak
-            if user.keycloak_sub:
-                try:
-                    keycloak_admin.deactivate_user(str(user.keycloak_sub))
-                except keycloak_admin.IntegrationError as exc:
+            serializer = UserProfileUpdateSerializer(user, data=serializer_data, partial=True)
+            serializer.is_valid(raise_exception=True)
+
+            old_state = {
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "email": user.email,
+                "status": user.status,
+                "metadata": user.metadata,
+            }
+
+            # Check deactivation/delete
+            deactivate = False
+            if (
+                serializer.validated_data.get("status") == "inactive"
+                and user.status != "inactive"
+            ):
+                deactivate = True
+            if (
+                serializer.validated_data.get("deleted") is True
+                and user.status != "inactive"
+            ):
+                deactivate = True
+
+            if deactivate:
+                from apps.users.services import has_active_assignments
+                blocking_reasons = has_active_assignments(user)
+                if blocking_reasons:
+                    reasons_str = " and ".join(blocking_reasons)
                     return _error_response(
-                        "IAM_DEACTIVATION_FAILED",
-                        f"Failed to deactivate user in Keycloak: {exc}",
+                        "USER_HAS_ACTIVE_ASSIGNMENTS",
+                        f"Cannot deactivate this profile: user has {reasons_str}. "
+                        "Reassign or close them before deactivating.",
                         status.HTTP_400_BAD_REQUEST,
                         getattr(request, "request_id", ""),
                     )
 
-            user.status = "inactive"
-            user.deactivated_at = timezone.now()
+                user.status = "inactive"
+                user.deactivated_at = timezone.now()
 
-        # Update other fields
-        for field in ["first_name", "last_name", "email", "metadata"]:
-            if field in serializer.validated_data:
-                setattr(user, field, serializer.validated_data[field])
+                # Schedule IAM deactivation after DB commit so the external call
+                # does not hold the DB lock open.
+                if user.keycloak_sub:
+                    _keycloak_sub = str(user.keycloak_sub)
 
-        user.save()
+                    def _deactivate_in_iam():
+                        try:
+                            keycloak_admin.deactivate_user(_keycloak_sub)
+                        except keycloak_admin.IntegrationError as exc:
+                            import logging as _log
+                            _log.getLogger(__name__).warning(
+                                "patch: IAM deactivation failed sub=%s: %s",
+                                _keycloak_sub, exc,
+                            )
 
-        new_state = {
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "email": user.email,
-            "status": user.status,
-            "metadata": user.metadata,
-        }
+                    transaction.on_commit(_deactivate_in_iam)
 
-        # Audit
-        _audit(
-            request,
-            action="USER_UPDATED",
-            entity_id=user.id,
-            old_state=old_state,
-            new_state=new_state,
-        )
+            # Update other fields
+            for field in ["first_name", "last_name", "email", "metadata"]:
+                if field in serializer.validated_data:
+                    setattr(user, field, serializer.validated_data[field])
 
-        # Publish outbox event
-        publish(
-            "UserUpdated",
-            {
-                "user_id": str(user.id),
-                "keycloak_sub": str(user.keycloak_sub) if user.keycloak_sub else None,
+            user.save()
+
+            new_state = {
+                "first_name": user.first_name,
+                "last_name": user.last_name,
                 "email": user.email,
                 "status": user.status,
-            },
-        )
+                "metadata": user.metadata,
+            }
+
+            _audit(
+                request,
+                action="USER_UPDATED",
+                entity_id=user.id,
+                old_state=old_state,
+                new_state=new_state,
+            )
+
+            publish(
+                "UserUpdated",
+                {
+                    "user_id": str(user.id),
+                    "keycloak_sub": str(user.keycloak_sub) if user.keycloak_sub else None,
+                    "email": user.email,
+                    "status": user.status,
+                },
+            )
 
         return _envelope(
             UserProfileSerializer(user).data,
@@ -1117,11 +1121,10 @@ class AdminUserRolesView(APIView):
         },
     )
     def get(self, request, pk):
+        from apps.users.models import UserProfile
         try:
-            user = __import__(
-                "apps.users.models", fromlist=["UserProfile"]
-            ).UserProfile.objects.get(pk=pk)
-        except Exception:
+            user = UserProfile.objects.get(pk=pk)
+        except UserProfile.DoesNotExist:
             return _error_response(
                 "NOT_FOUND",
                 "User profile not found.",
@@ -1483,8 +1486,12 @@ class RoleAssignmentApprovalActionView(APIView):
                         keycloak_admin.assign_client_role(
                             str(approval.target_user.keycloak_sub), approval.role.name
                         )
-                    except Exception:
-                        pass  # Non-fatal
+                    except keycloak_admin.IntegrationError:
+                        logger.warning(
+                            "approval: keycloak assign_client_role failed user=%s role=%s"
+                            " — DB approved; IAM will sync on next login",
+                            approval.target_user.id, approval.role.name,
+                        )
                 _audit(
                     request,
                     action="ROLE_APPROVAL_APPROVED",
@@ -1554,9 +1561,9 @@ class BulkUserImportView(APIView):
     """
 
     permission_classes = [IsAuthenticated, has_permission_with_step_up("users:import")]
-    parser_classes_setting = None  # use DRF default (MultiPart + JSON)
 
     from rest_framework.parsers import MultiPartParser, FormParser
+    parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(
         tags=["User Administration"],
@@ -1589,7 +1596,6 @@ class BulkUserImportView(APIView):
             403: _error_envelope("BulkImportForbiddenError"),
         },
     )
-    @transaction.atomic
     def post(self, request):
         import csv
         import hashlib
@@ -1689,7 +1695,7 @@ class BulkUserImportView(APIView):
         row_errors = []
 
         for i, raw_row in enumerate(rows, start=2):  # row 2 = first data row
-            row = {k.strip().lower(): (v or "").strip() for k, v in raw_row.items()}
+            row = {k.strip().lower(): ("" if v is None else str(v)).strip() for k, v in raw_row.items()}
             email = row.get("email", "")
             errs = []
 
@@ -1752,64 +1758,71 @@ class BulkUserImportView(APIView):
             if row.get("department"):
                 metadata["department"] = row["department"]
 
-            user = UserProfile.objects.create(
-                keycloak_sub=keycloak_sub_val,
-                email=email,
-                first_name=row["first_name"],
-                last_name=row["last_name"],
-                status="pending_invite",
-                metadata=metadata,
-                created_by=request.user,
-            )
-            for role_name in valid_roles:
-                role_obj = Role.objects.get(name=role_name)
-                UserRole.objects.create(
-                    user=user,
-                    role=role_obj,
-                    effective_from=today,
-                    assigned_by=request.user,
+            try:
+                with transaction.atomic():
+                    user = UserProfile.objects.create(
+                        keycloak_sub=keycloak_sub_val,
+                        email=email,
+                        first_name=row["first_name"],
+                        last_name=row["last_name"],
+                        status="pending_invite",
+                        metadata=metadata,
+                        created_by=request.user,
+                    )
+                    for role_name in valid_roles:
+                        role_obj = Role.objects.get(name=role_name)
+                        UserRole.objects.create(
+                            user=user,
+                            role=role_obj,
+                            effective_from=today,
+                            assigned_by=request.user,
+                        )
+                        RoleChangeEvent.objects.create(
+                            user=user,
+                            role=role_obj,
+                            change_type="assign",
+                            actor=request.user,
+                            reason="Bulk import",
+                        )
+                    publish(
+                        "UserCreated",
+                        {
+                            "user_id": str(user.id),
+                            "keycloak_sub": str(keycloak_sub_val) if keycloak_sub_val else None,
+                            "email": email,
+                            "roles": valid_roles,
+                            "source": "bulk_import",
+                        },
+                    )
+            except Exception as exc:
+                row_errors.append(
+                    {"row": i, "email": email, "errors": [f"DB error: {exc}"]}
                 )
-                RoleChangeEvent.objects.create(
-                    user=user,
-                    role=role_obj,
-                    change_type="assign",
-                    actor=request.user,
-                    reason="Bulk import",
-                )
-
-            publish(
-                "UserCreated",
-                {
-                    "user_id": str(user.id),
-                    "keycloak_sub": str(keycloak_sub_val) if keycloak_sub_val else None,
-                    "email": email,
-                    "roles": valid_roles,
-                    "source": "bulk_import",
-                },
-            )
+                continue
             successes += 1
 
         # ── Finalise record ───────────────────────────────────────────────────
-        record.status = BulkImportRecord.STATUS_COMPLETED
-        record.success_count = successes
-        record.failure_count = len(row_errors)
-        record.row_errors = row_errors
-        record.completed_at = tz.now()
-        record.save()
+        with transaction.atomic():
+            record.status = BulkImportRecord.STATUS_COMPLETED
+            record.success_count = successes
+            record.failure_count = len(row_errors)
+            record.row_errors = row_errors
+            record.completed_at = tz.now()
+            record.save()
 
-        _audit(
-            request,
-            action="BULK_IMPORT_COMPLETED",
-            entity_id=record.id,
-            new_state={
-                "import_id": str(record.id),
-                "filename": uploaded.name,
-                "file_hash": file_hash,
-                "total": len(rows),
-                "success": successes,
-                "failures": len(row_errors),
-            },
-        )
+            _audit(
+                request,
+                action="BULK_IMPORT_COMPLETED",
+                entity_id=record.id,
+                new_state={
+                    "import_id": str(record.id),
+                    "filename": uploaded.name,
+                    "file_hash": file_hash,
+                    "total": len(rows),
+                    "success": successes,
+                    "failures": len(row_errors),
+                },
+            )
 
         return _envelope(
             {
@@ -1937,6 +1950,23 @@ class BulkRoleAssignView(APIView):
                     )
                     continue
 
+                if user.keycloak_sub:
+                    try:
+                        keycloak_admin.assign_client_role(
+                            str(user.keycloak_sub), role_name
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "bulk_role_assign: keycloak assign_client_role failed "
+                            "user=%s role=%s: %s", uid, role_name, exc,
+                        )
+                        errors.append({
+                            "user_id": str(uid),
+                            "email": user.email,
+                            "error": "IAM role mapping failed.",
+                        })
+                        continue
+
                 UserRole.objects.create(
                     user=user,
                     role=role_obj,
@@ -1951,13 +1981,6 @@ class BulkRoleAssignView(APIView):
                     actor=request.user,
                     reason=reason,
                 )
-                if user.keycloak_sub:
-                    try:
-                        keycloak_admin.assign_client_role(
-                            str(user.keycloak_sub), role_name
-                        )
-                    except Exception:
-                        pass  # Non-fatal; IAM role mapping is best-effort
                 publish(
                     "UserRoleChanged",
                     {
@@ -1984,6 +2007,23 @@ class BulkRoleAssignView(APIView):
                     )
                     continue
 
+                if user.keycloak_sub:
+                    try:
+                        keycloak_admin.remove_client_role(
+                            str(user.keycloak_sub), role_name
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "bulk_role_revoke: keycloak remove_client_role failed "
+                            "user=%s role=%s: %s", uid, role_name, exc,
+                        )
+                        errors.append({
+                            "user_id": str(uid),
+                            "email": user.email,
+                            "error": "IAM role removal failed.",
+                        })
+                        continue
+
                 ur.revoked_at = tz.now()
                 ur.revoke_reason = reason
                 ur.save(update_fields=["revoked_at", "revoke_reason"])
@@ -1994,13 +2034,6 @@ class BulkRoleAssignView(APIView):
                     actor=request.user,
                     reason=reason,
                 )
-                if user.keycloak_sub:
-                    try:
-                        keycloak_admin.remove_client_role(
-                            str(user.keycloak_sub), role_name
-                        )
-                    except Exception:
-                        pass
                 publish(
                     "UserRoleChanged",
                     {

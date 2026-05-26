@@ -111,7 +111,31 @@ def add_codenames(apps, _schema_editor):
 
 def drop_codenames(apps, _schema_editor):
     Permission = apps.get_model("users", "Permission")
-    Permission.objects.filter(codename__in=[c for c, _ in NEW_PERMISSIONS]).delete()
+    RolePermission = apps.get_model("users", "RolePermission")
+    Role = apps.get_model("users", "Role")
+
+    # Remove only the grants this migration wired so we don't disturb
+    # any grants that existed before this migration ran.
+    for codename, role_names in GRANTS.items():
+        try:
+            perm = Permission.objects.get(codename=codename)
+        except Permission.DoesNotExist:
+            continue
+        for role_name in role_names:
+            try:
+                role = Role.objects.get(name=role_name)
+            except Role.DoesNotExist:
+                continue
+            RolePermission.objects.filter(role=role, permission=perm).delete()
+    # Delete only permissions that have no remaining grants. A pre-existing
+    # permission would retain grants we didn't create and must be left alone.
+    for codename, _ in NEW_PERMISSIONS:
+        try:
+            perm = Permission.objects.get(codename=codename)
+            if not RolePermission.objects.filter(permission=perm).exists():
+                perm.delete()
+        except Permission.DoesNotExist:
+            pass
 
 
 class Migration(migrations.Migration):

@@ -65,8 +65,9 @@ def queue_notification(
         status=Notification.Status.QUEUED,
     )
 
+    from django.db import transaction as _tx
     from .tasks import deliver_notification
-    deliver_notification.delay(str(notification.id))
+    _tx.on_commit(lambda: deliver_notification.delay(str(notification.id)))
 
     logger.info(
         "notifications: queued id=%s event=%s recipient=%s",

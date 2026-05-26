@@ -1,8 +1,8 @@
 {
 	"info": {
 		"_postman_id": "b1f9d3aa-7a8b-4c41-9c45-7b6cfaba0001",
-		"name": "NBES — RBAC + Sprint 1.3 (Audit / SecOps / Dashboards)",
-		"description": "End-to-end test suite for the NBES backend.\n\n## Scope\n\n- **Sprint 1.2** — Roles, Permissions & RBAC Gateway (folders 1–4)\n- **Sprint 1.3** — Audit hardening, Security Operations Console, Role Dashboard Skeletons, System 17 idempotency (folders 5–8)\n\n## Two ways to get tokens\n\n### A. Through IAM + Keycloak (recommended — exercises the production token path)\n\n1. Boot IAM:\n   ```bash\n   cd iam && docker compose up -d keycloak postgres\n   python manage.py migrate\n   python manage.py seed_superadmins\n   python manage.py seed_systems\n   python manage.py provision_keycloak_clients\n   python manage.py seed_system_roles\n   ```\n2. Boot NBES with `KEYCLOAK_ENABLED=True` pointing at the local Keycloak:\n   ```bash\n   cd ../nbes-backend\n   docker compose up -d db redis web\n   docker compose exec web python manage.py migrate\n   ```\n3. Run **folder `0 · Setup`** in this collection. The first request (`Keycloak token (super_admin)`) does a Keycloak resource-owner-password-grant against the `clet-iam-internal` client and stashes the access token into the `admin_token` variable. NBES validates the RS256 signature via the JWKS path.\n4. To test narrower roles (auditor, security_officer, examiner) you need users with those role assignments. Invite via IAM (`POST /api/v1/admin/invite/` or the UI), then run the corresponding `Keycloak token (...)` request with their credentials.\n\n### B. HS256 dev mint (no IAM needed, no Keycloak)\n\nSet `KEYCLOAK_ENABLED=False` in `nbes-backend/.env`. Mint tokens with the snippet at the bottom of this description, paste into the variable boxes. NBES skips the JWKS path.\n\n```python\n# mint_token.py — run as: python mint_token.py auditor\nimport jwt, uuid, time, sys\nROLE = sys.argv[1] if len(sys.argv) > 1 else 'system_administrator'\nSECRET = 'shared-jwt-secret-between-iam-and-nbes'   # JWT_SECRET_KEY in .env\npayload = {\n    'sub':   str(uuid.uuid4()),\n    'email': f'{ROLE}@example.com',\n    'iat':   int(time.time()),\n    'exp':   int(time.time()) + 3600,\n    'realm_access':    {'roles': ['super_admin'] if ROLE == 'super_admin' else []},\n    'resource_access': {'nbes-api': {'roles': [ROLE]}},\n}\nprint(jwt.encode(payload, SECRET, algorithm='HS256'))\n```\n\n## Notes\n\n- Every mutation writes an `AuditEvent`. Every 403 writes `AUTHZ_DENIED` + a `SecurityEvent(authz_denied)`.\n- State-mutating verbs (`POST`/`PUT`/`PATCH`/`DELETE`) require an `Idempotency-Key` header — the `IdempotencyKeyMiddleware` rejects them otherwise (folder 8 covers this).\n- The edge throttle activates at 100 rejected (401/403/429) responses from one IP in 15 minutes (folder 8).",
+		"name": "NBES \u2014 RBAC + Sprint 1.3 (Audit / SecOps / Dashboards)",
+		"description": "End-to-end test suite for the NBES backend.\n\n## Scope\n\n- **Sprint 1.2** \u2014 Roles, Permissions & RBAC Gateway (folders 1\u20134)\n- **Sprint 1.3** \u2014 Audit hardening, Security Operations Console, Role Dashboard Skeletons, System 17 idempotency (folders 5\u20138)\n\n## Two ways to get tokens\n\n### A. Through IAM + Keycloak (recommended \u2014 exercises the production token path)\n\n1. Boot IAM:\n   ```bash\n   cd iam && docker compose up -d keycloak postgres\n   python manage.py migrate\n   python manage.py seed_superadmins\n   python manage.py seed_systems\n   python manage.py provision_keycloak_clients\n   python manage.py seed_system_roles\n   ```\n2. Boot NBES with `KEYCLOAK_ENABLED=True` pointing at the local Keycloak:\n   ```bash\n   cd ../nbes-backend\n   docker compose up -d db redis web\n   docker compose exec web python manage.py migrate\n   ```\n3. Run **folder `0 \u00b7 Setup`** in this collection. The first request (`Keycloak token (super_admin)`) does a Keycloak resource-owner-password-grant against the `clet-iam-internal` client and stashes the access token into the `admin_token` variable. NBES validates the RS256 signature via the JWKS path.\n4. To test narrower roles (auditor, security_officer, examiner) you need users with those role assignments. Invite via IAM (`POST /api/v1/admin/invite/` or the UI), then run the corresponding `Keycloak token (...)` request with their credentials.\n\n### B. HS256 dev mint (no IAM needed, no Keycloak)\n\nSet `KEYCLOAK_ENABLED=False` in `nbes-backend/.env`. Mint tokens with the snippet at the bottom of this description, paste into the variable boxes. NBES skips the JWKS path.\n\n```python\n# mint_token.py \u2014 run as: python mint_token.py auditor\nimport jwt, uuid, time, sys\nROLE = sys.argv[1] if len(sys.argv) > 1 else 'system_administrator'\nSECRET = 'shared-jwt-secret-between-iam-and-nbes'   # JWT_SECRET_KEY in .env\npayload = {\n    'sub':   str(uuid.uuid4()),\n    'email': f'{ROLE}@example.com',\n    'iat':   int(time.time()),\n    'exp':   int(time.time()) + 3600,\n    'realm_access':    {'roles': ['super_admin'] if ROLE == 'super_admin' else []},\n    'resource_access': {'nbes-api': {'roles': [ROLE]}},\n}\nprint(jwt.encode(payload, SECRET, algorithm='HS256'))\n```\n\n## Notes\n\n- Every mutation writes an `AuditEvent`. Every 403 writes `AUTHZ_DENIED` + a `SecurityEvent(authz_denied)`.\n- State-mutating verbs (`POST`/`PUT`/`PATCH`/`DELETE`) require an `Idempotency-Key` header \u2014 the `IdempotencyKeyMiddleware` rejects them otherwise (folder 8 covers this).\n- The edge throttle activates at 100 rejected (401/403/429) responses from one IP in 15 minutes (folder 8).",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"auth": {
@@ -154,11 +154,11 @@
 	],
 	"item": [
 		{
-			"name": "0 · Setup — Get tokens (Keycloak direct)",
+			"name": "0 \u00b7 Setup \u2014 Get tokens (Keycloak direct)",
 			"description": "Resource-owner-password-grant against `clet-iam-internal`. Returns a real RS256 token NBES validates via JWKS. Run the user you care about; subsequent requests pick up the saved token.\n\nIf the user does not exist yet, invite them through IAM first.",
 			"item": [
 				{
-					"name": "Keycloak token (super_admin → admin_token)",
+					"name": "Keycloak token (super_admin \u2192 admin_token)",
 					"event": [
 						{
 							"listen": "test",
@@ -229,12 +229,12 @@
 								"token"
 							]
 						},
-						"description": "Resource-owner-password-grant. Bypasses IAM's MFA flow (intentional — MFA is fiddly to automate). The token still has the correct realm/client roles attached by the audience-resolve mapper."
+						"description": "Resource-owner-password-grant. Bypasses IAM's MFA flow (intentional \u2014 MFA is fiddly to automate). The token still has the correct realm/client roles attached by the audience-resolve mapper."
 					},
 					"response": []
 				},
 				{
-					"name": "Keycloak token (auditor → auditor_token)",
+					"name": "Keycloak token (auditor \u2192 auditor_token)",
 					"event": [
 						{
 							"listen": "test",
@@ -304,7 +304,7 @@
 					"response": []
 				},
 				{
-					"name": "Keycloak token (security_officer → security_officer_token)",
+					"name": "Keycloak token (security_officer \u2192 security_officer_token)",
 					"event": [
 						{
 							"listen": "test",
@@ -374,7 +374,7 @@
 					"response": []
 				},
 				{
-					"name": "Keycloak token (examiner → examiner_token)",
+					"name": "Keycloak token (examiner \u2192 examiner_token)",
 					"event": [
 						{
 							"listen": "test",
@@ -444,7 +444,7 @@
 					"response": []
 				},
 				{
-					"name": "Keycloak token (item_writer → writer_token)",
+					"name": "Keycloak token (item_writer \u2192 writer_token)",
 					"event": [
 						{
 							"listen": "test",
@@ -556,7 +556,7 @@
 			]
 		},
 		{
-			"name": "0 · Health & Introspection",
+			"name": "0 \u00b7 Health & Introspection",
 			"item": [
 				{
 					"name": "My permissions (admin)",
@@ -579,7 +579,7 @@
 					},
 					"response": [
 						{
-							"name": "200 OK — admin token",
+							"name": "200 OK \u2014 admin token",
 							"originalRequest": {
 								"method": "GET",
 								"url": {
@@ -602,7 +602,7 @@
 			]
 		},
 		{
-			"name": "1 · Permission catalog (read-only)",
+			"name": "1 \u00b7 Permission catalog (read-only)",
 			"item": [
 				{
 					"name": "List permissions",
@@ -643,7 +643,7 @@
 			]
 		},
 		{
-			"name": "2 · Role registry",
+			"name": "2 \u00b7 Role registry",
 			"item": [
 				{
 					"name": "List roles",
@@ -728,7 +728,7 @@
 							"mode": "raw",
 							"raw": "{\n  \"name\": \"{{new_role_name}}\",\n  \"description\": \"External reviewer brought in by NBEC for a single cycle\"\n}"
 						},
-						"description": "Tells NBES it should recognise a role name. Idempotent: re-posting the same name returns the existing row with 200 OK.\n\nNote the `Idempotency-Key` header — mandatory on all state-mutating verbs."
+						"description": "Tells NBES it should recognise a role name. Idempotent: re-posting the same name returns the existing row with 200 OK.\n\nNote the `Idempotency-Key` header \u2014 mandatory on all state-mutating verbs."
 					},
 					"response": []
 				},
@@ -785,7 +785,7 @@
 						},
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"description\": \"External reviewer — appointed by NBEC for the 2026 cycle\"\n}"
+							"raw": "{\n  \"description\": \"External reviewer \u2014 appointed by NBEC for the 2026 cycle\"\n}"
 						}
 					},
 					"response": []
@@ -822,7 +822,7 @@
 			]
 		},
 		{
-			"name": "3 · Role ↔ permission matrix",
+			"name": "3 \u00b7 Role \u2194 permission matrix",
 			"item": [
 				{
 					"name": "Get role permissions",
@@ -924,7 +924,7 @@
 			]
 		},
 		{
-			"name": "4 · Denial scenarios",
+			"name": "4 \u00b7 Denial scenarios",
 			"description": "Confirms the gateway rejects unauthorised callers AND records both an audit event AND a SecurityEvent(authz_denied).",
 			"item": [
 				{
@@ -1014,8 +1014,8 @@
 			]
 		},
 		{
-			"name": "5 · Audit (Sprint 1.3)",
-			"description": "The Auditor's three surfaces — search, hash-chain proof, NDJSON export. Plus a forced denial via the writer token to prove the new audit:* codenames gate as expected.",
+			"name": "5 \u00b7 Audit (Sprint 1.3)",
+			"description": "The Auditor's three surfaces \u2014 search, hash-chain proof, NDJSON export. Plus a forced denial via the writer token to prove the new audit:* codenames gate as expected.",
 			"item": [
 				{
 					"name": "Search audit trail",
@@ -1078,11 +1078,11 @@
 								}
 							]
 						},
-						"description": "GET /api/v1/audit/search — paginated, filterable. Every call writes its own `AUDIT_SEARCH` AuditEvent (meta-audit)."
+						"description": "GET /api/v1/audit/search \u2014 paginated, filterable. Every call writes its own `AUDIT_SEARCH` AuditEvent (meta-audit)."
 					},
 					"response": [
 						{
-							"name": "200 OK — paginated results",
+							"name": "200 OK \u2014 paginated results",
 							"status": "OK",
 							"code": 200,
 							"_postman_previewlanguage": "json",
@@ -1092,7 +1092,7 @@
 									"value": "application/json"
 								}
 							],
-							"body": "{\n  \"success\": true,\n  \"data\": [\n    {\n      \"event_id\": \"11111111-1111-1111-1111-111111111111\",\n      \"actor_id\": \"4b1f2e91-0e85-4f63-9b6a-2eaa6d2f0001\",\n      \"action\": \"AUDIT_SEARCH\",\n      \"entity_type\": \"audit\",\n      \"entity_id\": null,\n      \"new_state\": {\"filters\": {\"action\": \"AUDIT_SEARCH\"}, \"result_count\": 5},\n      \"chain_hash\": \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\n      \"created_at\": \"2026-05-20T10:00:00Z\"\n    }\n  ],\n  \"meta\": {\"page\": 1, \"total\": 5, \"pages\": 1, \"request_id\": \"…\"}\n}"
+							"body": "{\n  \"success\": true,\n  \"data\": [\n    {\n      \"event_id\": \"11111111-1111-1111-1111-111111111111\",\n      \"actor_id\": \"4b1f2e91-0e85-4f63-9b6a-2eaa6d2f0001\",\n      \"action\": \"AUDIT_SEARCH\",\n      \"entity_type\": \"audit\",\n      \"entity_id\": null,\n      \"new_state\": {\"filters\": {\"action\": \"AUDIT_SEARCH\"}, \"result_count\": 5},\n      \"chain_hash\": \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\n      \"created_at\": \"2026-05-20T10:00:00Z\"\n    }\n  ],\n  \"meta\": {\"page\": 1, \"total\": 5, \"pages\": 1, \"request_id\": \"\u2026\"}\n}"
 						}
 					]
 				},
@@ -1164,7 +1164,7 @@
 					},
 					"response": [
 						{
-							"name": "200 OK — anchored day",
+							"name": "200 OK \u2014 anchored day",
 							"status": "OK",
 							"code": 200,
 							"_postman_previewlanguage": "json",
@@ -1174,20 +1174,20 @@
 									"value": "application/json"
 								}
 							],
-							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"date\": \"2026-05-19\",\n    \"head_event_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"head_hash\": \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\n    \"event_count\": 482,\n    \"exported_to_s22_at\": \"2026-05-20T01:00:14Z\",\n    \"anchor_ref\": \"s22:anc:2026-05-19:9f86d08188\",\n    \"verifiable\": true,\n    \"created_at\": \"2026-05-20T01:00:00Z\"\n  },\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"date\": \"2026-05-19\",\n    \"head_event_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"head_hash\": \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\n    \"event_count\": 482,\n    \"exported_to_s22_at\": \"2026-05-20T01:00:14Z\",\n    \"anchor_ref\": \"s22:anc:2026-05-19:9f86d08188\",\n    \"verifiable\": true,\n    \"created_at\": \"2026-05-20T01:00:00Z\"\n  },\n  \"meta\": {\"request_id\": \"\u2026\"}\n}"
 						},
 						{
-							"name": "404 — no anchor yet",
+							"name": "404 \u2014 no anchor yet",
 							"status": "Not Found",
 							"code": 404,
 							"_postman_previewlanguage": "json",
 							"header": [
 								{
 									"key": "Content-Type",
-									"value": "application/json"
+									"value": "application/problem+json"
 								}
 							],
-							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"NOT_FOUND\",\n    \"message\": \"No hash anchor exists for 2026-05-19 yet. The daily anchor task runs at 01:00 UTC the following day.\"\n  },\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Not Found\",\n  \"status\": 404,\n  \"detail\": \"No hash anchor exists for 2026-05-19 yet. The daily anchor task runs at 01:00 UTC the following day.\",\n  \"instance\": \"\\u2026\"\n}"
 						}
 					]
 				},
@@ -1262,7 +1262,7 @@
 			]
 		},
 		{
-			"name": "6 · Security Operations (Sprint 1.3)",
+			"name": "6 \u00b7 Security Operations (Sprint 1.3)",
 			"description": "The Security Officer's live view. Every endpoint is gated by `secops:view`, granted to `security_officer` and `system_administrator`.",
 			"item": [
 				{
@@ -1300,7 +1300,7 @@
 					},
 					"response": [
 						{
-							"name": "200 OK — counts + top IPs",
+							"name": "200 OK \u2014 counts + top IPs",
 							"status": "OK",
 							"code": 200,
 							"_postman_previewlanguage": "json",
@@ -1310,7 +1310,7 @@
 									"value": "application/json"
 								}
 							],
-							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"window\": \"24h\",\n    \"window_seconds\": 86400,\n    \"since\": \"2026-05-19T12:00:00Z\",\n    \"total\": 142,\n    \"by_category\": {\n      \"auth_token_invalid\": 105,\n      \"authz_denied\":         32,\n      \"throttle_applied\":      4,\n      \"ip_blocked\":            1\n    },\n    \"top_ips\": [\n      {\"ip\": \"203.0.113.7\", \"count\": 101},\n      {\"ip\": \"203.0.113.8\", \"count\":  18}\n    ]\n  },\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"window\": \"24h\",\n    \"window_seconds\": 86400,\n    \"since\": \"2026-05-19T12:00:00Z\",\n    \"total\": 142,\n    \"by_category\": {\n      \"auth_token_invalid\": 105,\n      \"authz_denied\":         32,\n      \"throttle_applied\":      4,\n      \"ip_blocked\":            1\n    },\n    \"top_ips\": [\n      {\"ip\": \"203.0.113.7\", \"count\": 101},\n      {\"ip\": \"203.0.113.8\", \"count\":  18}\n    ]\n  },\n  \"meta\": {\"request_id\": \"\u2026\"}\n}"
 						}
 					]
 				},
@@ -1353,7 +1353,7 @@
 									"value": "application/json"
 								}
 							],
-							"body": "{\n  \"success\": true,\n  \"data\": [\n    {\n      \"ip\": \"203.0.113.7\",\n      \"category\": \"ip_blocked\",\n      \"occurred_at\": \"2026-05-20T11:42:03Z\",\n      \"active\": true,\n      \"retry_after_seconds\": 86234,\n      \"indicators\": {\"count\": 1000, \"window_seconds\": 86400, \"path\": \"/api/v1/audit/search\", \"method\": \"GET\"}\n    },\n    {\n      \"ip\": \"203.0.113.7\",\n      \"category\": \"throttle_applied\",\n      \"occurred_at\": \"2026-05-20T11:30:17Z\",\n      \"active\": false,\n      \"retry_after_seconds\": null,\n      \"indicators\": {\"count\": 100, \"window_seconds\": 900}\n    }\n  ],\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"body": "{\n  \"success\": true,\n  \"data\": [\n    {\n      \"ip\": \"203.0.113.7\",\n      \"category\": \"ip_blocked\",\n      \"occurred_at\": \"2026-05-20T11:42:03Z\",\n      \"active\": true,\n      \"retry_after_seconds\": 86234,\n      \"indicators\": {\"count\": 1000, \"window_seconds\": 86400, \"path\": \"/api/v1/audit/search\", \"method\": \"GET\"}\n    },\n    {\n      \"ip\": \"203.0.113.7\",\n      \"category\": \"throttle_applied\",\n      \"occurred_at\": \"2026-05-20T11:30:17Z\",\n      \"active\": false,\n      \"retry_after_seconds\": null,\n      \"indicators\": {\"count\": 100, \"window_seconds\": 900}\n    }\n  ],\n  \"meta\": {\"request_id\": \"\u2026\"}\n}"
 						}
 					]
 				},
@@ -1382,7 +1382,7 @@
 								"anomalies"
 							]
 						},
-						"description": "Returns SecurityEvent rows with category `anomaly_detected`. The detector itself is COULD per blueprint §1.9 and not in Sprint 1.3 — this endpoint exists so the dashboard contract is stable. Returns `[]`."
+						"description": "Returns SecurityEvent rows with category `anomaly_detected`. The detector itself is COULD per blueprint \u00a71.9 and not in Sprint 1.3 \u2014 this endpoint exists so the dashboard contract is stable. Returns `[]`."
 					},
 					"response": []
 				},
@@ -1452,11 +1452,11 @@
 			]
 		},
 		{
-			"name": "7 · Dashboards (Sprint 1.3)",
+			"name": "7 \u00b7 Dashboards (Sprint 1.3)",
 			"description": "Role-specific dashboard skeletons. Frontend reads `/dashboard/me` on login and renders the panels for the user's roles.",
 			"item": [
 				{
-					"name": "My dashboard (admin → 5 panels)",
+					"name": "My dashboard (admin \u2192 5 panels)",
 					"request": {
 						"method": "GET",
 						"url": {
@@ -1507,7 +1507,7 @@
 					]
 				},
 				{
-					"name": "My dashboard (examiner → 2 panels)",
+					"name": "My dashboard (examiner \u2192 2 panels)",
 					"request": {
 						"method": "GET",
 						"header": [
@@ -1536,7 +1536,7 @@
 					"response": []
 				},
 				{
-					"name": "My dashboard (auditor → 3 panels)",
+					"name": "My dashboard (auditor \u2192 3 panels)",
 					"request": {
 						"method": "GET",
 						"header": [
@@ -1608,7 +1608,7 @@
 							"mode": "raw",
 							"raw": "{\n  \"display_order\": 5,\n  \"default_config\": {\"filter\": \"assigned_to_me\"}\n}"
 						},
-						"description": "Admin-only (`dashboards:manage`). PATCH the panel's display_order, name, is_active, or default_config — no redeploy needed.\n\n`idempotency_key` is set by the pre-request script so the **Replay** request below uses the same key."
+						"description": "Admin-only (`dashboards:manage`). PATCH the panel's display_order, name, is_active, or default_config \u2014 no redeploy needed.\n\n`idempotency_key` is set by the pre-request script so the **Replay** request below uses the same key."
 					},
 					"response": []
 				},
@@ -1654,7 +1654,7 @@
 							"mode": "raw",
 							"raw": "{\n  \"display_order\": 5,\n  \"default_config\": {\"filter\": \"assigned_to_me\"}\n}"
 						},
-						"description": "Same key as the previous request → IdempotencyKeyMiddleware returns the cached response and the `X-Idempotent-Replay: true` response header."
+						"description": "Same key as the previous request \u2192 IdempotencyKeyMiddleware returns the cached response and the `X-Idempotent-Replay: true` response header."
 					},
 					"response": []
 				},
@@ -1696,10 +1696,10 @@
 							"header": [
 								{
 									"key": "Content-Type",
-									"value": "application/json"
+									"value": "application/problem+json"
 								}
 							],
-							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"IDEMPOTENCY_KEY_REQUIRED\",\n    \"message\": \"Idempotency-Key header is required for this verb.\"\n  },\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Bad Request\",\n  \"status\": 400,\n  \"detail\": \"Idempotency-Key header is required for this verb.\",\n  \"instance\": \"\\u2026\"\n}"
 						}
 					]
 				},
@@ -1747,7 +1747,7 @@
 			]
 		},
 		{
-			"name": "9 · User Administration",
+			"name": "9 \u00b7 User Administration",
 			"description": "User profile CRUD, bulk import, and bulk role assignment. All endpoints require users:manage or users:import permission.",
 			"item": [
 				{
@@ -1830,7 +1830,7 @@
 							},
 							{
 								"key": "Idempotency-Key",
-								"value": "{{}}"
+								"value": "{{$randomUUID}}"
 							}
 						],
 						"body": {
@@ -1880,10 +1880,10 @@
 							"header": [
 								{
 									"key": "Content-Type",
-									"value": "application/json"
+									"value": "application/problem+json"
 								}
 							],
-							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"FORBIDDEN\",\n    \"message\": \"Permission denied.\"\n  },\n  \"meta\": {}\n}"
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Forbidden\",\n  \"status\": 403,\n  \"detail\": \"Permission denied.\",\n  \"instance\": \"\\u2026\"\n}"
 						}
 					]
 				},
@@ -1921,7 +1921,7 @@
 							},
 							{
 								"key": "Idempotency-Key",
-								"value": "{{}}"
+								"value": "{{$randomUUID}}"
 							}
 						],
 						"body": {
@@ -1986,7 +1986,7 @@
 							},
 							{
 								"key": "Idempotency-Key",
-								"value": "{{}}"
+								"value": "{{$randomUUID}}"
 							}
 						],
 						"body": {
@@ -2038,10 +2038,10 @@
 							"header": [
 								{
 									"key": "Content-Type",
-									"value": "application/json"
+									"value": "application/problem+json"
 								}
 							],
-							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"FORBIDDEN\",\n    \"message\": \"Permission denied.\"\n  },\n  \"meta\": {}\n}"
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Forbidden\",\n  \"status\": 403,\n  \"detail\": \"Permission denied.\",\n  \"instance\": \"\\u2026\"\n}"
 						}
 					]
 				},
@@ -2056,7 +2056,7 @@
 							},
 							{
 								"key": "Idempotency-Key",
-								"value": "{{}}"
+								"value": "{{$randomUUID}}"
 							}
 						],
 						"body": {
@@ -2094,7 +2094,7 @@
 						"header": [
 							{
 								"key": "Idempotency-Key",
-								"value": "{{}}"
+								"value": "{{$randomUUID}}"
 							}
 						],
 						"body": {
@@ -2147,10 +2147,10 @@
 							"header": [
 								{
 									"key": "Content-Type",
-									"value": "application/json"
+									"value": "application/problem+json"
 								}
 							],
-							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"FORBIDDEN\",\n    \"message\": \"Permission denied.\"\n  },\n  \"meta\": {}\n}"
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Forbidden\",\n  \"status\": 403,\n  \"detail\": \"Permission denied.\",\n  \"instance\": \"\\u2026\"\n}"
 						}
 					]
 				},
@@ -2165,7 +2165,7 @@
 							},
 							{
 								"key": "Idempotency-Key",
-								"value": "{{}}"
+								"value": "{{$randomUUID}}"
 							}
 						],
 						"body": {
@@ -2192,7 +2192,7 @@
 								""
 							]
 						},
-						"description": "Assign or revoke a single role across up to 500 existing profiles. High-privilege roles (director_general, system_administrator, nbec_member) are blocked — use the individual /roles/ endpoint instead. Mutual-exclusion and already-assigned checks are applied per user; failures are reported row-level without aborting the batch. Requires users:manage + step-up auth."
+						"description": "Assign or revoke a single role across up to 500 existing profiles. High-privilege roles (director_general, system_administrator, nbec_member) are blocked \u2014 use the individual /roles/ endpoint instead. Mutual-exclusion and already-assigned checks are applied per user; failures are reported row-level without aborting the batch. Requires users:manage + step-up auth."
 					},
 					"response": [
 						{
@@ -2216,10 +2216,10 @@
 							"header": [
 								{
 									"key": "Content-Type",
-									"value": "application/json"
+									"value": "application/problem+json"
 								}
 							],
-							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"HIGH_PRIVILEGE_ROLE\",\n    \"message\": \"Role 'director_general' requires individual two-administrator approval.\"\n  },\n  \"meta\": {}\n}"
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Bad Request\",\n  \"status\": 400,\n  \"detail\": \"Role 'director_general' requires individual two-administrator approval.\",\n  \"instance\": \"\\u2026\"\n}"
 						},
 						{
 							"name": "403 Forbidden",
@@ -2229,21 +2229,21 @@
 							"header": [
 								{
 									"key": "Content-Type",
-									"value": "application/json"
+									"value": "application/problem+json"
 								}
 							],
-							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"FORBIDDEN\",\n    \"message\": \"Permission denied.\"\n  },\n  \"meta\": {}\n}"
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Forbidden\",\n  \"status\": 403,\n  \"detail\": \"Permission denied.\",\n  \"instance\": \"\\u2026\"\n}"
 						}
 					]
 				}
 			]
 		},
 		{
-			"name": "8 · Edge throttle smoke (manual)",
-			"description": "Fire 100+ requests with a deliberately bad token. The 101st should be 429 with `Retry-After: 900`. Run from a shell rather than Postman — Postman doesn't loop tidily, and the throttle keys on IP so a single request body won't move the counter past the threshold quickly.\n\n```bash\nfor i in $(seq 1 105); do\n  curl -s -o /dev/null -w \"%{http_code}\\n\" \\\n    http://localhost:8003/api/v1/audit/search \\\n    -H \"Authorization: Bearer not-a-real-token\"\ndone | sort | uniq -c\n# Expect: ~100 × 401, 5 × 429\n```\n\nThen run **6 · Currently throttled / blocked IPs** above to see the throttled IP listed with `active=true` and a `retry_after_seconds` close to 900.",
+			"name": "8 \u00b7 Edge throttle smoke (manual)",
+			"description": "Fire 100+ requests with a deliberately bad token. The 101st should be 429 with `Retry-After: 900`. Run from a shell rather than Postman \u2014 Postman doesn't loop tidily, and the throttle keys on IP so a single request body won't move the counter past the threshold quickly.\n\n```bash\nfor i in $(seq 1 105); do\n  curl -s -o /dev/null -w \"%{http_code}\\n\" \\\n    http://localhost:8003/api/v1/audit/search \\\n    -H \"Authorization: Bearer not-a-real-token\"\ndone | sort | uniq -c\n# Expect: ~100 \u00d7 401, 5 \u00d7 429\n```\n\nThen run **6 \u00b7 Currently throttled / blocked IPs** above to see the throttled IP listed with `active=true` and a `retry_after_seconds` close to 900.",
 			"item": [
 				{
-					"name": "Bad token (use 105× from shell)",
+					"name": "Bad token (use 105\u00d7 from shell)",
 					"request": {
 						"method": "GET",
 						"header": [
@@ -2271,17 +2271,17 @@
 					},
 					"response": [
 						{
-							"name": "401 Unauthorized (1st – 100th)",
+							"name": "401 Unauthorized (1st \u2013 100th)",
 							"status": "Unauthorized",
 							"code": 401,
 							"_postman_previewlanguage": "json",
 							"header": [
 								{
 									"key": "Content-Type",
-									"value": "application/json"
+									"value": "application/problem+json"
 								}
 							],
-							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"NOT_AUTHENTICATED\",\n    \"message\": \"Token validation failed: …\"\n  },\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Unauthorized\",\n  \"status\": 401,\n  \"detail\": \"Token validation failed: \\u2026\",\n  \"instance\": \"\\u2026\"\n}"
 						},
 						{
 							"name": "429 Throttled (101st onward, with Retry-After)",
@@ -2291,14 +2291,14 @@
 							"header": [
 								{
 									"key": "Content-Type",
-									"value": "application/json"
+									"value": "application/problem+json"
 								},
 								{
 									"key": "Retry-After",
 									"value": "900"
 								}
 							],
-							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"RATE_LIMITED\",\n    \"message\": \"Too many rejected requests from this IP — try again later.\"\n  },\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Too Many Requests\",\n  \"status\": 429,\n  \"detail\": \"Too many rejected requests from this IP \\u2014 try again later.\",\n  \"instance\": \"\\u2026\"\n}"
 						}
 					]
 				}

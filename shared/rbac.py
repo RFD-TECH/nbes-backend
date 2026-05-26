@@ -85,32 +85,28 @@ def _user_db_roles(sub: str) -> set[str]:
     This is the authoritative source — it reflects revocations that have
     already happened in NBES even if the JWT hasn't expired yet (up to 8h
     token lifetime). Results cached per user with CACHE_TTL (60 s).
+
+    Raises on DB error so callers can fall back to JWT roles explicitly.
     """
     cached = cache.get(_USER_CACHE_PREFIX + sub)
     if cached is not None:
         return set(cached)
 
-    try:
-        from django.utils import timezone as tz
-        from apps.users.models import UserRole
+    from django.utils import timezone as tz
+    from apps.users.models import UserRole
 
-        today = tz.now().date()
-        role_names = set(
-            UserRole.objects.filter(
-                user__keycloak_sub=sub,
-                revoked_at__isnull=True,
-                effective_from__lte=today,
-            )
-            .filter(
-                models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=today)
-            )
-            .values_list("role__name", flat=True)
+    today = tz.now().date()
+    role_names = set(
+        UserRole.objects.filter(
+            user__keycloak_sub=sub,
+            revoked_at__isnull=True,
+            effective_from__lte=today,
         )
-    except Exception:
-        logger.exception(
-            "rbac._user_db_roles failed for sub=%s — falling back to JWT", sub
+        .filter(
+            models.Q(effective_to__isnull=True) | models.Q(effective_to__gte=today)
         )
-        return set()
+        .values_list("role__name", flat=True)
+    )
 
     cache.set(_USER_CACHE_PREFIX + sub, list(role_names), CACHE_TTL)
     return role_names
@@ -146,21 +142,26 @@ def permissions_for(jwt_payload: dict) -> set[str]:
 
     Resolution order (§1.2.2):
     1. ``super_admin`` realm role → wildcard, bypasses everything.
-    2. JWT role claims (fast path — Keycloak client roles).
-    3. UserRole DB table (authoritative — reflects revocations within 60 s
+    2. UserRole DB table (authoritative — reflects revocations within 60 s
        even while the JWT is still alive, satisfying REQ-F000-02).
-    The two sets are unioned so a user gains access if either source grants
-    the role, but loses access immediately when the DB row is revoked
-    (because the DB set shrinks and the cache expires within CACHE_TTL).
+    3. Falls back to JWT role claims only when the DB is unreachable.
     """
     if _has_super_admin(jwt_payload):
         return {WILDCARD}
 
     jwt_roles = set(get_nbes_role_names(jwt_payload))
     sub = (jwt_payload or {}).get("sub", "")
-    db_roles = _user_db_roles(sub) if sub else set()
 
-    all_roles = jwt_roles | db_roles
+    db_roles: set[str] | None = None
+    if sub:
+        try:
+            db_roles = _user_db_roles(sub)
+        except Exception:
+            logger.exception(
+                "rbac.permissions_for: DB lookup failed for sub=%s — falling back to JWT", sub
+            )
+
+    all_roles = db_roles if db_roles is not None else jwt_roles
     if not all_roles:
         return set()
 

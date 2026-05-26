@@ -519,7 +519,7 @@ class COIPolicyView(APIView):
 
     permission_classes = [
         IsAuthenticated,
-        has_permission_with_step_up("committee:manage"),
+        has_permission_with_step_up("committee:manage") | has_permission("audit:export"),
     ]
 
     @extend_schema(

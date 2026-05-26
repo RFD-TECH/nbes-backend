@@ -318,6 +318,9 @@ class RoleAssignmentApproval(models.Model):
             raise ValueError(f"Cannot approve a {self.status} request.")
         if reviewer.pk == self.requested_by_id:
             raise ValueError("The approving administrator must differ from the requester.")
+        from django.utils import timezone as _tz
+        if self.expires_at and self.expires_at < _tz.now():
+            raise ValueError("Cannot approve an expired request.")
 
         with __import__("django.db", fromlist=["transaction"]).transaction.atomic():
             user_role = UserRole.objects.create(

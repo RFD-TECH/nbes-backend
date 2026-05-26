@@ -415,7 +415,7 @@ skeletons so the navigation IA is stable from day one.
 > management to the central IAM (System 19 / Keycloak). The data model below reflects only
 > what NBES owns locally. Password, MFA, session, and login_attempt tables live in IAM.
 
-```
+```text
 user_profile        — id (UUID PK), keycloak_sub (UUID, unique, nullable),
                       email (unique, case-insensitive), first_name, last_name,
                       status (pending_invite/active/inactive),

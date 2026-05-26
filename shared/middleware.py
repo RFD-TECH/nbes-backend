@@ -168,6 +168,10 @@ class AuditMiddleware(MiddlewareMixin):
         if tracestate:
             response["tracestate"] = tracestate
 
+        from shared.events import set_request_id, set_trace_context
+        set_request_id(None)
+        set_trace_context(None, None)
+
         return response
 
     @staticmethod

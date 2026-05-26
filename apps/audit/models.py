@@ -102,6 +102,7 @@ class AuditEvent(models.Model):
                 "action": action,
                 "entity_type": kwargs.get("entity_type", ""),
                 "entity_id": str(kwargs.get("entity_id", "")),
+                "old_state": kwargs.get("old_state", {}),
                 "new_state": kwargs.get("new_state", {}),
                 "created_at": created_at.isoformat(),
             },
