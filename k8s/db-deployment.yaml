@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nbes-db-pvc
+  namespace: nbes
+  labels:
+    app.kubernetes.io/name: nbes-db
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nbes-db
+  namespace: nbes
+  labels:
+    app.kubernetes.io/name: nbes-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nbes-db
+  template:
+    metadata:
+      labels:
+        app: nbes-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: nbes-config
+                  key: DBNAME
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: nbes-secrets
+                  key: DBUSER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nbes-secrets
+                  key: DBPASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+              name: postgres
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          volumeMounts:
+            - name: db-storage
+              mountPath: /var/lib/postgresql/data
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - "$(POSTGRES_USER)"
+                - -d
+                - "$(POSTGRES_DB)"
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - "$(POSTGRES_USER)"
+                - -d
+                - "$(POSTGRES_DB)"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: db-storage
+          persistentVolumeClaim:
+            claimName: nbes-db-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nbes-db-svc
+  namespace: nbes
+  labels:
+    app.kubernetes.io/name: nbes-db
+spec:
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgres
+  selector:
+    app: nbes-db

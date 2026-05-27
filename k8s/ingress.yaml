@@ -1,0 +1,31 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nbes-ingress
+  namespace: nbes
+  labels:
+    app.kubernetes.io/name: nbes-ingress
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # SSL redirection settings (recommended)
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  rules:
+    - host: "nbes-api.example.com" # Replace with your actual domain name
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nbes-web-svc
+                port:
+                  number: 8000
+  # TLS configuration placeholder
+  tls:
+    - hosts:
+        - "nbes-api.example.com"
+      secretName: nbes-tls-secret # Manual or Cert-Manager managed secret

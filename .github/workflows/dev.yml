@@ -5,15 +5,158 @@ on:
     branches:
       - dev
 
-
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}   # e.g. ghcr.io/your-org/your-repo
 
+permissions:
+  contents: read
+  packages: write
 
 jobs:
+  # 1. Run unit tests
+  test:
+    name: Lint & Run Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-  # 1. Build & push image to GitHub Container Registry
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
 
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libmagic1 \
+            libpango-1.0-0 \
+            libpangocairo-1.0-0 \
+            libgdk-pixbuf-xlib-2.0-0 \
+            libffi-dev \
+            shared-mime-info \
+            fontconfig
 
-  # 2. Deploy to Kubernetes on the VPS
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-django
+
+      - name: Run Pytest
+        env:
+          SECRET_KEY: "test-secret-key-for-ci-only"
+        run: |
+          pytest
+
+  # 2. Build & push image to GitHub Container Registry
+  build-and-push:
+    name: Build & Push Container Image
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Downcase Image Name
+        run: |
+          echo "IMAGE_NAME_LOWER=${IMAGE_NAME,,}" >> $GITHUB_ENV
+        env:
+          IMAGE_NAME: ${{ github.repository }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}
+          tags: |
+            type=ref,event=branch
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/dev' }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # 3. Deploy to Kubernetes on the VPS
+  deploy:
+    name: Deploy to VPS Kubernetes
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Downcase Image Name
+        run: |
+          echo "IMAGE_NAME_LOWER=${IMAGE_NAME,,}" >> $GITHUB_ENV
+        env:
+          IMAGE_NAME: ${{ github.repository }}
+
+      - name: Copy Kubernetes manifests to VPS via SCP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          source: "k8s/*"
+          target: "~/nbes-deploy"
+          strip_components: 0
+
+      - name: Interpolate Image and Apply Manifests
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script: |
+            # Set the built image tag
+            IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}:sha-${{ github.sha }}"
+            
+            # Navigate to deploy directory
+            cd ~/nbes-deploy/k8s
+            
+            # Replace placeholder in deployment manifests with the specific built image tag
+            # We use | as a delimiter since the image tag contains slashes
+            sed -i "s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" web-deployment.yaml
+            sed -i "s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" workers-deployment.yaml
+            
+            # Apply all manifests to Kubernetes (Namespace, ConfigMap, Deployments, Ingress)
+            kubectl apply -f namespace.yaml
+            kubectl apply -f configmap.yaml
+            
+            # Note: The Secret must be created manually on the cluster beforehand.
+            # E.g. kubectl apply -f secret.yaml
+            
+            kubectl apply -f db-deployment.yaml
+            kubectl apply -f redis-deployment.yaml
+            kubectl apply -f web-deployment.yaml
+            kubectl apply -f workers-deployment.yaml
+            kubectl apply -f ingress.yaml
+            
+            # Verify rollouts
+            kubectl rollout status deployment/nbes-web -n nbes --timeout=120s
+            kubectl rollout status deployment/nbes-worker-marking -n nbes --timeout=120s
+            kubectl rollout status deployment/nbes-worker-general -n nbes --timeout=120s
+            kubectl rollout status deployment/nbes-worker-sla -n nbes --timeout=120s
+            kubectl rollout status deployment/nbes-beat -n nbes --timeout=120s

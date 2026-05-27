@@ -1,0 +1,154 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nbes-worker-marking
+  namespace: nbes
+  labels:
+    app.kubernetes.io/name: nbes-worker-marking
+    app.kubernetes.io/part-of: nbes-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nbes-worker-marking
+  template:
+    metadata:
+      labels:
+        app: nbes-worker-marking
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: worker
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: Always
+          command: ["celery", "-A", "config", "worker", "--loglevel=info", "-Q", "marking-high", "-c", "4"]
+          envFrom:
+            - configMapRef:
+                name: nbes-config
+            - secretRef:
+                name: nbes-secrets
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nbes-worker-general
+  namespace: nbes
+  labels:
+    app.kubernetes.io/name: nbes-worker-general
+    app.kubernetes.io/part-of: nbes-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nbes-worker-general
+  template:
+    metadata:
+      labels:
+        app: nbes-worker-general
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: worker
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: Always
+          command: ["celery", "-A", "config", "worker", "--loglevel=info", "-Q", "moderation,results,cert-trigger,notifications", "-c", "4"]
+          envFrom:
+            - configMapRef:
+                name: nbes-config
+            - secretRef:
+                name: nbes-secrets
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nbes-worker-sla
+  namespace: nbes
+  labels:
+    app.kubernetes.io/name: nbes-worker-sla
+    app.kubernetes.io/part-of: nbes-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nbes-worker-sla
+  template:
+    metadata:
+      labels:
+        app: nbes-worker-sla
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: worker
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: Always
+          command: ["celery", "-A", "config", "worker", "--loglevel=info", "-Q", "sla-monitor,vault-integrity,outbox", "-c", "2"]
+          envFrom:
+            - configMapRef:
+                name: nbes-config
+            - secretRef:
+                name: nbes-secrets
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nbes-beat
+  namespace: nbes
+  labels:
+    app.kubernetes.io/name: nbes-beat
+    app.kubernetes.io/part-of: nbes-backend
+spec:
+  replicas: 1
+  # Strategy Recreate is critical for Celery Beat to prevent duplicate scheduler execution during rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nbes-beat
+  template:
+    metadata:
+      labels:
+        app: nbes-beat
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: beat
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: Always
+          command: ["celery", "-A", "config", "beat", "--loglevel=info"]
+          envFrom:
+            - configMapRef:
+                name: nbes-config
+            - secretRef:
+                name: nbes-secrets
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi

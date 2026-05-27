@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nbes-config
+  namespace: nbes
+  labels:
+    app.kubernetes.io/name: nbes
+    app.kubernetes.io/part-of: nbes-backend
+data:
+  DJANGO_SETTINGS_MODULE: "config.settings.prod"
+  TIME_ZONE: "Africa/Accra"
+  ALLOWED_HOSTS: "*"
+  SECURE_SSL_REDIRECT: "False"
+  
+  # Database details (in-cluster or external hostname)
+  DBENGINE: "postgresql"
+  DBNAME: "nbes_db"
+  DBHOST: "nbes-db-svc"
+  DBPORT: "5432"
+  
+  # Redis connection URL (internal service endpoint)
+  REDIS_URL: "redis://nbes-redis-svc:6379/0"
+  
+  # Feature toggles & integrations
+  KAFKA_ENABLED: "False"
+  KEYCLOAK_ENABLED: "False"
+  KEYCLOAK_REALM_URL: "http://keycloak:8080/realms/clet-internal"
+  VAULT_DEV_MODE: "True"
+  MINIO_ENABLED: "False"
+  
+  # SLA thresholds and other settings
+  ITEM_COOLDOWN_SITTINGS: "3"
+  PAPER_MARKS_TOLERANCE: "5.0"
+  PAPER_VERIFICATION_BASE_URL: "https://verify.gsl.edu.gh"
+  DISCRIMINATION_THRESHOLD: "0.2"
+  SYSTEM_14_BASE_URL: "http://system14-svc.internal:8080"
