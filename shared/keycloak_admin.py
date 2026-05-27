@@ -171,7 +171,7 @@ def create_user(
     resp = _execute_with_retry(_create)
     location = resp.headers.get("Location")
     if not location:
-        raise IntegrationError("Keycloak response missing Location header")
+        raise IntegrationError("Keycloak response missing Location header", retryable=False)
     user_uuid = location.rstrip("/").split("/")[-1]
 
     try:
@@ -222,9 +222,12 @@ def create_user(
 
             _execute_with_retry(_invite)
 
-    except Exception:
+    except Exception as e:
         # Compensating rollback: delete the partially-provisioned Keycloak user
-        # so NBES and Keycloak don't diverge.
+        # so NBES and Keycloak don't diverge. Only attempt retryable errors.
+        if not isinstance(e, IntegrationError) or not getattr(e, "retryable", True):
+            raise
+
         def _delete_user():
             del_resp = requests.delete(
                 f"{admin_base}/users/{user_uuid}",
