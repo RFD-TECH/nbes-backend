@@ -60,6 +60,18 @@ app.conf.beat_schedule = {
         "schedule": crontab(hour=1, minute=30),
         "options": {"queue": "sla-monitor"},
     },
+    # SRS §2.2.5 — daily integrity checksum vs System 05 archive copy.
+    "committee-archive-integrity": {
+        "task": "apps.committee.tasks.verify_archive_integrity",
+        "schedule": crontab(hour=2, minute=15),
+        "options": {"queue": "sla-monitor"},
+    },
+    # SRS §2.2.4 — annual COI refresh reminder.
+    "committee-coi-refresh": {
+        "task": "apps.committee.tasks.monitor_coi_refresh_due",
+        "schedule": crontab(hour=4, minute=0),
+        "options": {"queue": "sla-monitor"},
+    },
     # expire pending two-admin role-assignment approvals after 48h
     "expire-pending-role-approvals": {
         "task": "apps.users.tasks.expire_pending_role_approvals",

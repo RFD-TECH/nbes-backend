@@ -1,17 +1,28 @@
-"""apps/committee/models.py — NBEC Committee domain models."""
+"""apps/committee/models.py — NBEC Committee domain models.
+
+Field names follow the SRS Phase 2 data model (§2.5.1) verbatim:
+``nbec_member (id, full_name, designation, instrument_ref unique,
+              tenure_start, tenure_end, status, contact, photo_ref)``
+
+Identity (the underlying user account, password, MFA, invite email,
+role grants in Keycloak) belongs to IAM. NBES only stores the
+NBEC-specific domain record and links to the IAM identity via
+``keycloak_sub``. NBES never creates or directly mutates Keycloak users.
+"""
 import uuid
 from django.db import models
 from django.utils import timezone
 
 
 class NBECMember(models.Model):
-    """NBEC member register. Keycloak sub links to identity in IAM."""
+    """NBEC member register. ``keycloak_sub`` links to the IAM identity."""
 
-    class Role(models.TextChoices):
+    class Designation(models.TextChoices):
+        # Per SRS §2.2.1: designations are exactly Chair, Deputy Chair, Member.
+        # NBEC Secretariat is a Phase 1 platform role, NOT a member designation.
         CHAIR = "chair", "Chair"
         DEPUTY_CHAIR = "deputy_chair", "Deputy Chair"
         MEMBER = "member", "Member"
-        SECRETARY = "secretary", "Secretary"
 
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
@@ -22,46 +33,57 @@ class NBECMember(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     keycloak_sub = models.UUIDField(unique=True)
     full_name = models.CharField(max_length=255)
-    title = models.CharField(max_length=50, blank=True)       # e.g. "Prof.", "Dr."
-    post_nominals = models.CharField(max_length=100, blank=True)  # e.g. "FCIArb, LLM"
-    email = models.EmailField()
-    role = models.CharField(max_length=20, choices=Role.choices, default=Role.MEMBER)
+    title = models.CharField(max_length=50, blank=True)            # SRS §2.2.1 "title and post-nominals"
+    post_nominals = models.CharField(max_length=100, blank=True)   # SRS §2.2.1 "title and post-nominals"
+    contact = models.EmailField()                                  # SRS §2.5.1 "contact"
+    designation = models.CharField(
+        max_length=20, choices=Designation.choices, default=Designation.MEMBER
+    )
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
-    # Appointment instrument reference — letter/gazette ref from appointing authority
+    # Appointing instrument reference — letter/gazette ref from appointing authority
     instrument_ref = models.CharField(max_length=100, unique=True, null=True, blank=True)
-    appointment_date = models.DateField()
-    tenure_end_date = models.DateField(null=True, blank=True)
+    tenure_start = models.DateField()
+    tenure_end = models.DateField(null=True, blank=True)
     photo_ref = models.TextField(blank=True)   # MinIO object key
-    is_active = models.BooleanField(default=False)
-    is_voting_member = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "committee_nbecmember"
         constraints = [
-            # At most one active Chair at a time
+            # At most one active Chair at a time (SRS §2.7 / §2.2.1).
             models.UniqueConstraint(
-                fields=["role"],
-                condition=models.Q(role="chair", status="active"),
+                fields=["designation"],
+                condition=models.Q(designation="chair", status="active"),
                 name="unique_active_chair",
-            )
+            ),
+            # SRS §2.7: "Tenure end > tenure start". Enforced at the DB so
+            # services that bypass full_clean() (e.g. bulk operations, raw
+            # ORM .create() in tests) can't persist invalid ranges.
+            models.CheckConstraint(
+                condition=models.Q(tenure_end__isnull=True)
+                | models.Q(tenure_end__gt=models.F("tenure_start")),
+                name="tenure_end_after_start",
+            ),
         ]
 
     def __str__(self):
-        return f"{self.full_name} ({self.get_role_display()})"
+        return f"{self.full_name} ({self.get_designation_display()})"
+
+    @property
+    def is_active(self) -> bool:
+        """Derived from status; SRS data model exposes ``status`` only."""
+        return self.status == self.Status.ACTIVE
 
     def activate(self):
         if self.status not in (self.Status.DRAFT, self.Status.RENEWED):
             raise ValueError(f"Cannot activate member in status '{self.status}'.")
         self.status = self.Status.ACTIVE
-        self.is_active = True
-        self.save(update_fields=["status", "is_active", "updated_at"])
+        self.save(update_fields=["status", "updated_at"])
 
     def expire(self):
         self.status = self.Status.EXPIRED
-        self.is_active = False
-        self.save(update_fields=["status", "is_active", "updated_at"])
+        self.save(update_fields=["status", "updated_at"])
 
 
 class Meeting(models.Model):

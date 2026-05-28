@@ -265,9 +265,11 @@ STEP_UP_MIN_ACR_LEVEL = 2  # integer; acr >= this → step-up ok
 # and NBES reads its system roles from resource_access[NBES_CLIENT_ID].roles.
 NBES_CLIENT_ID = os.environ.get("NBES_CLIENT_ID", "nbes-api")
 
-# Service-account credentials used by shared/keycloak_admin.py to call the
-# Keycloak Admin API (e.g. revoking roles on tenure expiry). The client must
-# have the realm-management "manage-users" and "manage-realm" service roles.
+# Architectural rule for Phase 2 (committee): identity management belongs to
+# IAM (AMS) — the committee app publishes MemberExpired events instead of
+# touching Keycloak directly. Other apps (notably apps/users/) still use
+# shared/keycloak_admin.py for their own provisioning needs, so these
+# service-account credentials remain available. See docs/IAM_HANDOFF_PHASE2.md.
 KEYCLOAK_ADMIN_CLIENT_ID = os.environ.get(
     "KEYCLOAK_ADMIN_CLIENT_ID",
     os.environ.get("KEYCLOAK_CLIENT_ID_INTERNAL", ""),
@@ -321,6 +323,11 @@ EDGE_SECURITY_EVENT_RETENTION_DAYS = int(
 SYSTEM_20_WEBHOOK_SECRET = os.environ.get("SYSTEM_20_WEBHOOK_SECRET", "")
 SYSTEM_21_URL = os.environ.get("SYSTEM_21_URL", "")
 SYSTEM_21_API_KEY = os.environ.get("SYSTEM_21_API_KEY", "")
+
+# System 05 — Regulator's tamper-evident archive (SRS §2.2.5). NBES archives
+# signed Minutes here within 1 hour of Chair sign-off.
+SYSTEM_05_URL = os.environ.get("SYSTEM_05_URL", "")
+SYSTEM_05_API_KEY = os.environ.get("SYSTEM_05_API_KEY", "")
 NLEMS_URL = os.environ.get("NLEMS_URL", "")
 NLEMS_API_KEY = os.environ.get("NLEMS_API_KEY", "")
 # System 14 Integration Settings

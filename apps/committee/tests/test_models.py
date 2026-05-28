@@ -19,10 +19,10 @@ def member(db):
     return NBECMember.objects.create(
         keycloak_sub="00000000-0000-0000-0000-000000000001",
         full_name="Test Member",
-        email="member@example.com",
-        role=NBECMember.Role.MEMBER,
+        contact="member@example.com",
+        designation=NBECMember.Designation.MEMBER,
         status=NBECMember.Status.DRAFT,
-        appointment_date=datetime.date(2026, 1, 1),
+        tenure_start=datetime.date(2026, 1, 1),
     )
 
 
@@ -50,8 +50,8 @@ def minutes_obj(db, meeting):
 class TestNBECMember:
     def test_create_defaults(self, member):
         assert member.status == NBECMember.Status.DRAFT
-        assert member.is_active is True
-        assert member.is_voting_member is True
+        # is_active is a derived property — False until status=ACTIVE
+        assert member.is_active is False
 
     def test_activate_from_draft(self, member):
         member.activate()
@@ -76,9 +76,9 @@ class TestNBECMember:
         m = NBECMember.objects.create(
             keycloak_sub="00000000-0000-0000-0000-000000000099",
             full_name="Plain Member",
-            email="plain@example.com",
-            role=NBECMember.Role.MEMBER,
-            appointment_date=datetime.date(2026, 1, 1),
+            contact="plain@example.com",
+            designation=NBECMember.Designation.MEMBER,
+            tenure_start=datetime.date(2026, 1, 1),
         )
         assert m.title == ""
         assert m.post_nominals == ""

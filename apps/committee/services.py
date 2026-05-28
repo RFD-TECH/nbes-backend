@@ -41,12 +41,17 @@ def _audit(actor_id, action, entity_type, entity_id, old_state=None, new_state=N
 
 @transaction.atomic
 def create_member(actor_id, data: dict, *, request_id=None, ip_address=None) -> NBECMember:
-    """Create a new NBEC member record in Draft status."""
+    """Create a new NBEC member record in Draft status.
+
+    The Keycloak/IAM user identified by ``keycloak_sub`` MUST already exist —
+    IAM owns user creation, invitations, MFA enrolment, and role grants. This
+    function only creates the NBES-side domain record linked to that identity.
+    """
     member = NBECMember.objects.create(**data)
     _audit(actor_id, ev.MEMBER_CREATED, "committee_member", member.id,
-           new_state={"role": member.role, "email": member.email},
+           new_state={"designation": member.designation, "contact": member.contact},
            request_id=request_id, ip_address=ip_address)
-    publish("MemberCreated", {"member_id": str(member.id), "role": member.role})
+    publish("MemberCreated", {"member_id": str(member.id), "designation": member.designation})
     return member
 
 
@@ -56,16 +61,21 @@ def amend_member(actor_id, member: NBECMember, data: dict, *,
     """Amend an existing member record. All field changes are audit-logged."""
     old_state = {
         "full_name": member.full_name,
-        "role": member.role,
-        "email": member.email,
-        "tenure_end_date": str(member.tenure_end_date) if member.tenure_end_date else None,
+        "designation": member.designation,
+        "contact": member.contact,
+        "tenure_end": str(member.tenure_end) if member.tenure_end else None,
     }
     for field, value in data.items():
         setattr(member, field, value)
     member.save()
     _audit(actor_id, ev.MEMBER_AMENDED, "committee_member", member.id,
            old_state=old_state,
-           new_state={"full_name": member.full_name, "role": member.role},
+           new_state={
+               "full_name": member.full_name,
+               "designation": member.designation,
+               "contact": member.contact,
+               "tenure_end": str(member.tenure_end) if member.tenure_end else None,
+           },
            request_id=request_id, ip_address=ip_address)
     publish("MemberAmended", {"member_id": str(member.id)})
     return member
@@ -287,7 +297,11 @@ def adjourn_meeting(actor_id, meeting: Meeting, *,
 @transaction.atomic
 def sign_minutes(actor_id, minutes: Minutes, signature_ref: str = "", *,
                  request_id=None, ip_address=None) -> Minutes:
-    """Chair digitally signs and seals the minutes — immutable from this point."""
+    """Chair digitally signs and seals the minutes — immutable from this point.
+
+    On commit, schedules archival to System 05 (SRS §2.4.2: archive must land
+    within 1 hour of sign-off).
+    """
     if minutes.approved:
         raise ValueError("Minutes have already been signed.")
     minutes.sign(chair_id=actor_id, signature_ref=signature_ref)
@@ -306,7 +320,17 @@ def sign_minutes(actor_id, minutes: Minutes, signature_ref: str = "", *,
         "minutes_id": str(minutes.id),
         "meeting_id": str(minutes.meeting_id),
     })
+    # Kick off System 05 archival after this transaction commits so the
+    # worker reads the persisted row.
+    minutes_id = str(minutes.id)
+    transaction.on_commit(lambda: _enqueue_archive(minutes_id))
     return minutes
+
+
+def _enqueue_archive(minutes_id: str) -> None:
+    """Indirection so tests can patch the dispatch without importing Celery."""
+    from .tasks import archive_minutes_to_system05
+    archive_minutes_to_system05.delay(minutes_id)
 
 
 @transaction.atomic
