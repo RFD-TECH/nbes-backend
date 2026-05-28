@@ -1,4 +1,4 @@
-"""shared/secops.py — Single entry point for recording security events.
+"""Single entry point for recording security events.
 
 Used by ``shared/auth.py`` (token rejection), ``shared/permissions.py``
 (403 denied), ``shared/middleware.py::EdgeRateLimitMiddleware`` (throttle
@@ -12,6 +12,7 @@ they are atomic from the perspective of any reader.
 The blueprint §1.2.6 anchors this — "security event taxonomy aligned
 with the System 22 SIEM schema."
 """
+
 from __future__ import annotations
 
 import logging
@@ -24,13 +25,14 @@ logger = logging.getLogger(__name__)
 
 
 CATEGORY_SEVERITY = {
-    "auth_token_invalid":     "warning",
-    "auth_token_expired":     "info",
+    "auth_token_invalid": "warning",
+    "auth_token_expired": "info",
     "auth_audience_mismatch": "warning",
-    "authz_denied":           "warning",
-    "throttle_applied":       "warning",
-    "ip_blocked":             "high",
-    "anomaly_detected":       "high",
+    "authz_denied": "warning",
+    "step_up_denied": "warning",
+    "throttle_applied": "warning",
+    "ip_blocked": "high",
+    "anomaly_detected": "high",
 }
 
 
@@ -85,5 +87,7 @@ def record_security_event(
         # is the last-ditch evidence.
         logger.error(
             "secops.record_failed category=%s ip=%s err=%s",
-            category, ip_address, exc,
+            category,
+            ip_address,
+            exc,
         )

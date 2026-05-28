@@ -1,5 +1,6 @@
-"""apps/sitting/views.py — Phase 4 Sitting API.
+from __future__ import annotations
 
+"""
 Endpoints (mounted at ``/api/v1/sittings/`` — see ``urls.py``):
 
 * ``GET    /``                                       — list sittings
@@ -30,7 +31,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from shared.pagination import StandardResultsPagination
-from shared.permissions import has_permission
+from shared.permissions import has_permission, has_permission_with_step_up
 
 from . import services
 from .models import (
@@ -94,7 +95,8 @@ def _ip(request):
 
 def _handle_validation_error(exc: services.SittingValidationError, request_id):
     return _err(
-        exc.code, exc.message,
+        exc.code,
+        exc.message,
         status.HTTP_400_BAD_REQUEST,
         details=exc.details,
         request_id=request_id,
@@ -147,12 +149,16 @@ class SittingListCreateView(APIView):
         ser.is_valid(raise_exception=True)
         try:
             sitting = services.create_sitting(
-                _actor(request), ser.validated_data,
-                request_id=_rid(request), ip_address=_ip(request),
+                _actor(request),
+                ser.validated_data,
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except services.SittingValidationError as exc:
             return _handle_validation_error(exc, _rid(request))
-        return _ok(SittingSerializer(sitting).data, _rid(request), status.HTTP_201_CREATED)
+        return _ok(
+            SittingSerializer(sitting).data, _rid(request), status.HTTP_201_CREATED
+        )
 
 
 # ── Sitting detail ─────────────────────────────────────────────────────────
@@ -188,8 +194,11 @@ class SittingDetailView(APIView):
         ser.is_valid(raise_exception=True)
         try:
             sitting = services.update_sitting_draft(
-                _actor(request), sitting, ser.validated_data,
-                request_id=_rid(request), ip_address=_ip(request),
+                _actor(request),
+                sitting,
+                ser.validated_data,
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except services.SittingValidationError as exc:
             return _handle_validation_error(exc, _rid(request))
@@ -258,8 +267,11 @@ class SubjectPaperUpsertView(APIView):
         ser.is_valid(raise_exception=True)
         try:
             paper = services.add_or_update_paper(
-                _actor(request), sitting, ser.validated_data,
-                request_id=_rid(request), ip_address=_ip(request),
+                _actor(request),
+                sitting,
+                ser.validated_data,
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except services.SittingValidationError as exc:
             return _handle_validation_error(exc, _rid(request))
@@ -279,12 +291,17 @@ class SubjectPaperDeleteView(APIView):
     def delete(self, request, ref, paper_id):
         paper = _get_paper(paper_id)
         if not paper or str(paper.sitting_id) != ref:
-            return _err("NOT_FOUND", "Paper not found in this sitting.",
-                        status.HTTP_404_NOT_FOUND)
+            return _err(
+                "NOT_FOUND",
+                "Paper not found in this sitting.",
+                status.HTTP_404_NOT_FOUND,
+            )
         try:
             services.remove_paper(
-                _actor(request), paper,
-                request_id=_rid(request), ip_address=_ip(request),
+                _actor(request),
+                paper,
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except services.SittingValidationError as exc:
             return _handle_validation_error(exc, _rid(request))
@@ -306,8 +323,10 @@ class _TransitionView(APIView):
             return _err("NOT_FOUND", "Sitting not found.", status.HTTP_404_NOT_FOUND)
         try:
             sitting = fn(
-                _actor(request), sitting,
-                request_id=_rid(request), ip_address=_ip(request),
+                _actor(request),
+                sitting,
+                request_id=_rid(request),
+                ip_address=_ip(request),
                 **kwargs,
             )
         except services.SittingValidationError as exc:
@@ -338,15 +357,20 @@ class SittingApproveView(_TransitionView):
     def post(self, request, ref):
         ser = SittingApproveSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        return self._do(request, ref, services.approve_sitting,
-                        meeting_id=ser.validated_data["meeting_id"])
+        return self._do(
+            request,
+            ref,
+            services.approve_sitting,
+            meeting_id=ser.validated_data["meeting_id"],
+        )
 
 
 class SittingLockView(APIView):
     """``POST /sittings/{ref}/lock/`` — manual lock (requires override permission)."""
 
     permission_classes = [
-        IsAuthenticated, has_permission(PERM_SITTING_LOCK_OVERRIDE),
+        IsAuthenticated,
+        has_permission_with_step_up(PERM_SITTING_LOCK_OVERRIDE),
     ]
 
     @extend_schema(
@@ -369,11 +393,13 @@ class SittingLockView(APIView):
             # override" provenance lives on SittingLock.override and the
             # audit trail, not on the event kind.
             sitting = services.lock_sitting(
-                _actor(request), sitting,
+                _actor(request),
+                sitting,
                 kind=SittingLockEvent.Kind.AUTO_LOCK,
                 justification=justification or "Manual lock by authorised override.",
                 override=True,
-                request_id=_rid(request), ip_address=_ip(request),
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except services.SittingValidationError as exc:
             return _handle_validation_error(exc, _rid(request))
@@ -427,10 +453,12 @@ class SittingAmendNonCriticalView(APIView):
         ser.is_valid(raise_exception=True)
         try:
             sitting = services.amend_non_critical(
-                _actor(request), sitting,
+                _actor(request),
+                sitting,
                 changes=ser.validated_data["changes"],
                 justification=ser.validated_data["justification"],
-                request_id=_rid(request), ip_address=_ip(request),
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except services.SittingValidationError as exc:
             return _handle_validation_error(exc, _rid(request))
@@ -441,7 +469,8 @@ class SittingAmendCriticalView(APIView):
     """``POST /sittings/{ref}/amend-critical/`` — NBEC-resolution amendment."""
 
     permission_classes = [
-        IsAuthenticated, has_permission(PERM_SITTING_LOCK_OVERRIDE),
+        IsAuthenticated,
+        has_permission_with_step_up(PERM_SITTING_LOCK_OVERRIDE),
     ]
 
     @extend_schema(
@@ -459,11 +488,13 @@ class SittingAmendCriticalView(APIView):
         ser.is_valid(raise_exception=True)
         try:
             sitting = services.amend_critical_with_resolution(
-                _actor(request), sitting,
+                _actor(request),
+                sitting,
                 changes=ser.validated_data["changes"],
                 resolution_ref=ser.validated_data["resolution_ref"],
                 justification=ser.validated_data["justification"],
-                request_id=_rid(request), ip_address=_ip(request),
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except services.SittingValidationError as exc:
             return _handle_validation_error(exc, _rid(request))
@@ -485,7 +516,9 @@ class SittingLockEventListView(APIView):
     def get(self, request, ref):
         if not _get_sitting(ref):
             return _err("NOT_FOUND", "Sitting not found.", status.HTTP_404_NOT_FOUND)
-        events = SittingLockEvent.objects.filter(sitting_id=ref).order_by("-occurred_at")
+        events = SittingLockEvent.objects.filter(sitting_id=ref).order_by(
+            "-occurred_at"
+        )
         return _ok(SittingLockEventSerializer(events, many=True).data, _rid(request))
 
 
@@ -510,14 +543,20 @@ class VariantGenerateView(APIView):
         ser.is_valid(raise_exception=True)
         try:
             result = generate_variants(
-                _actor(request), paper,
+                _actor(request),
+                paper,
                 count=ser.validated_data["count"],
                 seeds=ser.validated_data.get("seeds"),
-                request_id=_rid(request), ip_address=_ip(request),
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except ValueError as exc:
-            return _err("BAD_REQUEST", str(exc), status.HTTP_400_BAD_REQUEST,
-                        request_id=_rid(request))
+            return _err(
+                "BAD_REQUEST",
+                str(exc),
+                status.HTTP_400_BAD_REQUEST,
+                request_id=_rid(request),
+            )
         return _ok(
             {
                 "created": VariantSerializer(result.created, many=True).data,
@@ -573,10 +612,14 @@ class BlueprintVersionListPublishView(APIView):
         ser = BlueprintVersionPublishSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         version = services.publish_blueprint_version(
-            _actor(request), subject_code, ser.validated_data,
-            request_id=_rid(request), ip_address=_ip(request),
+            _actor(request),
+            subject_code,
+            ser.validated_data,
+            request_id=_rid(request),
+            ip_address=_ip(request),
         )
         return _ok(
-            BlueprintVersionSerializer(version).data, _rid(request),
+            BlueprintVersionSerializer(version).data,
+            _rid(request),
             status.HTTP_201_CREATED,
         )

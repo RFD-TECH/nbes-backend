@@ -72,4 +72,10 @@ app.conf.beat_schedule = {
         "schedule": crontab(hour=4, minute=0),
         "options": {"queue": "sla-monitor"},
     },
+    # expire pending two-admin role-assignment approvals after 48h
+    "expire-pending-role-approvals": {
+        "task": "apps.users.tasks.expire_pending_role_approvals",
+        "schedule": crontab(minute=0),  # every hour
+        "options": {"queue": "sla-monitor"},
+    },
 }

@@ -34,7 +34,7 @@ def noop_reverse(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("committee", "0003_fix_nbecmember_is_active_default"),
+        ("committee", "0004_alter_conflictdeclaration_subject_type"),
     ]
 
     operations = [

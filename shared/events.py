@@ -1,6 +1,4 @@
-"""
-shared/events.py — Domain Event Publishing (Transactional Outbox)
-=================================================================
+"""Domain Event Publishing (Transactional Outbox).
 
 publish() writes a domain event to the OutboxEvent table within the
 current DB transaction. A Celery Beat task (apps.audit.tasks.poll_outbox)
@@ -14,10 +12,32 @@ In production (KAFKA_ENABLED=True), the outbox task publishes to Kafka.
 
 Reference: NBES System Architecture §6.1 — Transactional outbox pattern
 """
+from __future__ import annotations
 
+import threading
 import uuid
-import json
+
 from django.utils import timezone
+
+_local = threading.local()
+
+
+def set_request_id(request_id) -> None:
+    """Called by AuditMiddleware so publish() can inherit the in-flight request_id."""
+    _local.request_id = request_id
+
+
+def get_request_id():
+    return getattr(_local, "request_id", None)
+
+
+def set_trace_context(traceparent: str | None, tracestate: str | None) -> None:
+    _local.traceparent = traceparent
+    _local.tracestate = tracestate
+
+
+def get_trace_context() -> tuple[str | None, str | None]:
+    return getattr(_local, "traceparent", None), getattr(_local, "tracestate", None)
 
 
 def publish(event_name: str, payload: dict, *, topic: str | None = None) -> None:
@@ -39,8 +59,13 @@ def publish(event_name: str, payload: dict, *, topic: str | None = None) -> None
     if topic is None:
         topic = _infer_topic(event_name)
 
+    traceparent, tracestate = get_trace_context()
+
     OutboxEvent.objects.create(
         correlation_id=uuid.uuid4(),
+        request_id=get_request_id(),
+        traceparent=traceparent,
+        tracestate=tracestate,
         topic=topic,
         event_name=event_name,
         payload=payload,

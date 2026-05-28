@@ -56,3 +56,10 @@ Thumbs.db
 *.pem
 *.key
 service_account.json
+
+
+# Phase 1 documentation artifacts
+phase_1.md
+phase_1.pdf
+phase1_gap_analysis.md
+phase1_gap_analysis.pdf

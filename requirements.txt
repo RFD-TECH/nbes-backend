@@ -39,6 +39,7 @@ Pillow               # Image processing
 weasyprint           # Registration slips, result PDFs, audit export packages
 reportlab            # Fallback PDF generation
 python-docx==1.2.0   # Microsoft Word (.docx) paper export (NBE-F02-09)
+openpyxl             # XLSX parsing for bulk user import
 
 # ── QR Codes ─────────────────────────────────────────────────────────────────
 qrcode[pil]          # Registration slip QR, exam paper barcodes

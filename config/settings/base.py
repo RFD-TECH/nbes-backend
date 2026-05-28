@@ -107,7 +107,9 @@ DATABASES = {
 }
 
 AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
+    },
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
@@ -130,12 +132,8 @@ MEDIA_ROOT = BASE_DIR / "media"
 REST_FRAMEWORK = {
     # JWT authentication — delegates to Keycloak in prod, shared-secret JWT in dev.
     # See shared/auth.py → KeycloakJWTAuthentication
-    "DEFAULT_AUTHENTICATION_CLASSES": (
-        "shared.auth.KeycloakJWTAuthentication",
-    ),
-    "DEFAULT_PERMISSION_CLASSES": (
-        "rest_framework.permissions.IsAuthenticated",
-    ),
+    "DEFAULT_AUTHENTICATION_CLASSES": ("shared.auth.KeycloakJWTAuthentication",),
+    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     # Maps TransitionNotAllowed → 400 TRANSITION_NOT_ALLOWED.
     # Wraps all responses in standard envelope. See shared/exceptions.py
     "EXCEPTION_HANDLER": "shared.exceptions.nbes_exception_handler",
@@ -160,10 +158,22 @@ SPECTACULAR_SETTINGS = {
     "SCHEMA_PATH_PREFIX": r"/api/v1",
     "COMPONENT_SPLIT_REQUEST": True,
     "TAGS": [
-        {"name": "RBAC Admin", "description": "Manage NBES role and permission mapping."},
-        {"name": "Current User", "description": "Inspect the current user's NBES permissions and dashboard."},
-        {"name": "Audit", "description": "Search and verify the append-only audit trail (Auditor / Administrator only)."},
-        {"name": "NBEC Committee", "description": "NBEC member register, meetings, agendas, minutes, and conflict-of-interest declarations (Phase 2 — NBE-F01)."},
+        {
+            "name": "RBAC Admin",
+            "description": "Manage NBES role and permission mapping.",
+        },
+        {
+            "name": "Current User",
+            "description": "Inspect the current user's NBES permissions and dashboard.",
+        },
+        {
+            "name": "Audit",
+            "description": "Search and verify the append-only audit trail (Auditor / Administrator only).",
+        },
+        {
+            "name": "NBEC Committee",
+            "description": "NBEC member register, meetings, agendas, minutes, and conflict-of-interest declarations (Phase 2 — NBE-F01).",
+        },
     ],
 }
 
@@ -187,15 +197,15 @@ CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
 # Named queues — see architecture doc §6.1
 CELERY_TASK_QUEUES = {
-    "marking-high": {},      # AI scoring, audit hash — exam-critical
-    "moderation": {},        # Borderline routing, reconciliation
-    "results": {},           # Normalisation, hash verification, PDF generation
-    "cert-trigger": {},      # System 14 webhook — 1-hour SLA
-    "notifications": {},     # System 21 dispatch
-    "sla-monitor": {},       # SLA checking — runs every 15 minutes
-    "vault-integrity": {},   # Daily vault SHA-256 integrity check
-    "outbox": {},            # Outbox poller — runs every 5 seconds
-    "item-quality": {},      # Monthly low-quality item flag job (NBE-F02-09)
+    "marking-high": {},  # AI scoring, audit hash — exam-critical
+    "moderation": {},  # Borderline routing, reconciliation
+    "results": {},  # Normalisation, hash verification, PDF generation
+    "cert-trigger": {},  # System 14 webhook — 1-hour SLA
+    "notifications": {},  # System 21 dispatch
+    "sla-monitor": {},  # SLA checking — runs every 15 minutes
+    "vault-integrity": {},  # Daily vault SHA-256 integrity check
+    "outbox": {},  # Outbox poller — runs every 5 seconds
+    "item-quality": {},  # Monthly low-quality item flag job (NBE-F02-09)
 }
 
 # ── Itembank · paper construction & quality ──────────────────────────────────
@@ -246,18 +256,31 @@ KEYCLOAK_REALM_URL = os.environ.get("KEYCLOAK_REALM_URL", "")
 JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", SECRET_KEY)
 JWT_ALGORITHM = "HS256"
 
+# Step-up authentication. Values injected by API Gateway.
+STEP_UP_HEADER_MFA = "HTTP_X_MFA_VERIFIED"  # gateway convenience header
+STEP_UP_HEADER_ACR = "HTTP_X_ACR"  # Keycloak ACR level header
+STEP_UP_MIN_ACR_LEVEL = 2  # integer; acr >= this → step-up ok
+
 # NBES's own backend client_id. Tokens for NBES must list this in `aud`,
 # and NBES reads its system roles from resource_access[NBES_CLIENT_ID].roles.
 NBES_CLIENT_ID = os.environ.get("NBES_CLIENT_ID", "nbes-api")
 
-# NBES does NOT call the Keycloak Admin API. Identity management (user
-# creation, role grants/revocations, MFA, invites) is owned by IAM (AMS).
-# NBES interacts with IAM via published domain events and IAM-issued JWTs.
+# Architectural rule for Phase 2 (committee): identity management belongs to
+# IAM (AMS) — the committee app publishes MemberExpired events instead of
+# touching Keycloak directly. Other apps (notably apps/users/) still use
+# shared/keycloak_admin.py for their own provisioning needs, so these
+# service-account credentials remain available. See docs/IAM_HANDOFF_PHASE2.md.
+KEYCLOAK_ADMIN_CLIENT_ID = os.environ.get(
+    "KEYCLOAK_ADMIN_CLIENT_ID",
+    os.environ.get("KEYCLOAK_CLIENT_ID_INTERNAL", ""),
+)
+KEYCLOAK_ADMIN_CLIENT_SECRET = os.environ.get(
+    "KEYCLOAK_ADMIN_CLIENT_SECRET",
+    os.environ.get("KEYCLOAK_CLIENT_SECRET_INTERNAL", ""),
+)
 KEYCLOAK_VALID_AUDIENCES = [
     value.strip()
-    for value in os.environ.get(
-        "KEYCLOAK_VALID_AUDIENCES", NBES_CLIENT_ID
-    ).split(",")
+    for value in os.environ.get("KEYCLOAK_VALID_AUDIENCES", NBES_CLIENT_ID).split(",")
     if value.strip()
 ]
 
@@ -308,7 +331,9 @@ SYSTEM_05_API_KEY = os.environ.get("SYSTEM_05_API_KEY", "")
 NLEMS_URL = os.environ.get("NLEMS_URL", "")
 NLEMS_API_KEY = os.environ.get("NLEMS_API_KEY", "")
 # System 14 Integration Settings
-SYSTEM_14_BASE_URL = os.environ.get("SYSTEM_14_BASE_URL", "http://system14-svc.internal:8080")
+SYSTEM_14_BASE_URL = os.environ.get(
+    "SYSTEM_14_BASE_URL", "http://system14-svc.internal:8080"
+)
 # Validated at the task call site (apps/itembank/tasks.py) rather than at
 # settings-import time so collectstatic/migrate/tests don't require it.
 SYSTEM_14_SERVICE_TOKEN = os.environ.get("SYSTEM_14_SERVICE_TOKEN", "")

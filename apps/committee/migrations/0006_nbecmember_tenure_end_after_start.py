@@ -57,7 +57,7 @@ def noop_reverse(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("committee", "0004_align_nbecmember_to_srs"),
+        ("committee", "0005_align_nbecmember_to_srs"),
     ]
 
     operations = [

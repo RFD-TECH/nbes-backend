@@ -1,4 +1,4 @@
-"""apps/audit/views.py — Auditor-facing endpoints."""
+"""Auditor-facing endpoints."""
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone as py_timezone
@@ -20,7 +20,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from shared.pagination import StandardResultsPagination
-from shared.permissions import has_permission
+from shared.permissions import has_permission, has_permission_with_step_up
 
 from .filters import build_audit_query
 from .models import AuditEvent, DailyHashAnchor
@@ -233,7 +233,7 @@ class AuditChainView(APIView):
 class AuditExportView(APIView):
     """``GET /api/v1/audit/export?from=&to=`` — streamed NDJSON export."""
 
-    permission_classes = [IsAuthenticated, has_permission("audit:export")]
+    permission_classes = [IsAuthenticated, has_permission_with_step_up("audit:export")]
 
     @extend_schema(
         tags=["Audit"],

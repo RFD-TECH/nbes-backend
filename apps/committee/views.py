@@ -1,4 +1,4 @@
-"""apps/committee/views.py — NBEC Committee API views.
+"""NBEC Committee API views.
 
 Endpoints (Phase 2 — NBE-F01):
   POST   /api/v1/nbec/members/                  — create member
@@ -15,6 +15,7 @@ Endpoints (Phase 2 — NBE-F01):
   POST   /api/v1/nbec/minutes/{id}/addendum/    — Chair issues addendum
   GET    /api/v1/nbec/policy/coi/               — internal COI check
 """
+
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers, status
 from rest_framework.permissions import IsAuthenticated
@@ -22,7 +23,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from shared.pagination import StandardResultsPagination
-from shared.permissions import has_permission
+from shared.permissions import has_permission, has_permission_with_step_up
 
 from . import services
 from .models import ConflictDeclaration, Meeting, Minutes, NBECMember
@@ -74,9 +75,14 @@ def _ip(request):
 
 # ── NBECMember ────────────────────────────────────────────────────────────────
 
+
 class MemberListCreateView(APIView):
     """``GET /api/v1/nbec/members/`` — List members. ``POST`` — Create."""
-    permission_classes = [IsAuthenticated, has_permission("committee:manage")]
+
+    permission_classes = [
+        IsAuthenticated,
+        has_permission_with_step_up("committee:manage"),
+    ]
 
     @extend_schema(
         tags=["NBEC Committee"],
@@ -87,6 +93,7 @@ class MemberListCreateView(APIView):
     def get(self, request):
         qs = NBECMember.objects.all().order_by("full_name")
         from shared.pagination import StandardResultsPagination
+
         paginator = StandardResultsPagination()
         result = paginator.paginate_queryset(qs, request)
         data = NBECMemberSerializer(result, many=True).data
@@ -103,15 +110,23 @@ class MemberListCreateView(APIView):
         ser = NBECMemberCreateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         member = services.create_member(
-            _actor(request), ser.validated_data,
-            request_id=_rid(request), ip_address=_ip(request),
+            _actor(request),
+            ser.validated_data,
+            request_id=_rid(request),
+            ip_address=_ip(request),
         )
-        return _ok(NBECMemberSerializer(member).data, _rid(request), status.HTTP_201_CREATED)
+        return _ok(
+            NBECMemberSerializer(member).data, _rid(request), status.HTTP_201_CREATED
+        )
 
 
 class MemberDetailView(APIView):
     """``PATCH /api/v1/nbec/members/{id}/`` — Amend a member record."""
-    permission_classes = [IsAuthenticated, has_permission("committee:manage")]
+
+    permission_classes = [
+        IsAuthenticated,
+        has_permission_with_step_up("committee:manage"),
+    ]
 
     def _get_member(self, pk):
         try:
@@ -133,15 +148,22 @@ class MemberDetailView(APIView):
         ser = NBECMemberAmendSerializer(member, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         member = services.amend_member(
-            _actor(request), member, ser.validated_data,
-            request_id=_rid(request), ip_address=_ip(request),
+            _actor(request),
+            member,
+            ser.validated_data,
+            request_id=_rid(request),
+            ip_address=_ip(request),
         )
         return _ok(NBECMemberSerializer(member).data, _rid(request))
 
 
 class MemberActivateView(APIView):
     """``POST /api/v1/nbec/members/{id}/activate/`` — Activate a draft member."""
-    permission_classes = [IsAuthenticated, has_permission("committee:manage")]
+
+    permission_classes = [
+        IsAuthenticated,
+        has_permission_with_step_up("committee:manage"),
+    ]
 
     @extend_schema(
         tags=["NBEC Committee"],
@@ -156,8 +178,10 @@ class MemberActivateView(APIView):
             return _err("NOT_FOUND", "Member not found.", status.HTTP_404_NOT_FOUND)
         try:
             member = services.activate_member(
-                _actor(request), member,
-                request_id=_rid(request), ip_address=_ip(request),
+                _actor(request),
+                member,
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except ValueError as exc:
             return _err("VALIDATION_ERROR", str(exc), status.HTTP_400_BAD_REQUEST)
@@ -166,8 +190,10 @@ class MemberActivateView(APIView):
 
 # ── ConflictDeclaration ───────────────────────────────────────────────────────
 
+
 class COICreateView(APIView):
     """``POST /api/v1/nbec/coi/`` — Member declares a COI."""
+
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
@@ -181,17 +207,25 @@ class COICreateView(APIView):
         ser = COIDeclareSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         coi = services.declare_coi(
-            _actor(request), ser.validated_data,
-            request_id=_rid(request), ip_address=_ip(request),
+            _actor(request),
+            ser.validated_data,
+            request_id=_rid(request),
+            ip_address=_ip(request),
         )
         return _ok(
-            ConflictDeclarationSerializer(coi).data, _rid(request), status.HTTP_201_CREATED
+            ConflictDeclarationSerializer(coi).data,
+            _rid(request),
+            status.HTTP_201_CREATED,
         )
 
 
 class COIReviewView(APIView):
     """``POST /api/v1/nbec/coi/{id}/review/`` — Approve or dismiss a COI."""
-    permission_classes = [IsAuthenticated, has_permission("committee:manage")]
+
+    permission_classes = [
+        IsAuthenticated,
+        has_permission_with_step_up("committee:manage"),
+    ]
 
     @extend_schema(
         tags=["NBEC Committee"],
@@ -204,15 +238,19 @@ class COIReviewView(APIView):
         try:
             coi = ConflictDeclaration.objects.get(pk=pk)
         except ConflictDeclaration.DoesNotExist:
-            return _err("NOT_FOUND", "COI declaration not found.", status.HTTP_404_NOT_FOUND)
+            return _err(
+                "NOT_FOUND", "COI declaration not found.", status.HTTP_404_NOT_FOUND
+            )
         ser = COIReviewSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         try:
             coi = services.review_coi(
-                _actor(request), coi,
+                _actor(request),
+                coi,
                 approve=ser.validated_data["approved"],
                 review_date=ser.validated_data.get("review_date"),
-                request_id=_rid(request), ip_address=_ip(request),
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except ValueError as exc:
             return _err("VALIDATION_ERROR", str(exc), status.HTTP_400_BAD_REQUEST)
@@ -221,9 +259,14 @@ class COIReviewView(APIView):
 
 # ── Meeting ───────────────────────────────────────────────────────────────────
 
+
 class MeetingCreateView(APIView):
     """``POST /api/v1/nbec/meetings/`` — Schedule a new meeting."""
-    permission_classes = [IsAuthenticated, has_permission("committee:manage")]
+
+    permission_classes = [
+        IsAuthenticated,
+        has_permission_with_step_up("committee:manage"),
+    ]
 
     @extend_schema(
         tags=["NBEC Committee"],
@@ -236,10 +279,14 @@ class MeetingCreateView(APIView):
         ser = MeetingCreateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         meeting = services.schedule_meeting(
-            _actor(request), ser.validated_data,
-            request_id=_rid(request), ip_address=_ip(request),
+            _actor(request),
+            ser.validated_data,
+            request_id=_rid(request),
+            ip_address=_ip(request),
         )
-        return _ok(MeetingSerializer(meeting).data, _rid(request), status.HTTP_201_CREATED)
+        return _ok(
+            MeetingSerializer(meeting).data, _rid(request), status.HTTP_201_CREATED
+        )
 
 
 def _get_meeting(pk):
@@ -251,7 +298,11 @@ def _get_meeting(pk):
 
 class MeetingAgendaView(APIView):
     """``POST /api/v1/nbec/meetings/{id}/agenda/`` — Publish agenda version."""
-    permission_classes = [IsAuthenticated, has_permission("committee:manage")]
+
+    permission_classes = [
+        IsAuthenticated,
+        has_permission_with_step_up("committee:manage"),
+    ]
 
     @extend_schema(
         tags=["NBEC Committee"],
@@ -267,17 +318,25 @@ class MeetingAgendaView(APIView):
         ser = AgendaPublishSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         agenda = services.publish_agenda(
-            _actor(request), meeting,
+            _actor(request),
+            meeting,
             items=ser.validated_data["items"],
             document_ref=ser.validated_data.get("document_ref", ""),
-            request_id=_rid(request), ip_address=_ip(request),
+            request_id=_rid(request),
+            ip_address=_ip(request),
         )
-        return _ok(AgendaSerializer(agenda).data, _rid(request), status.HTTP_201_CREATED)
+        return _ok(
+            AgendaSerializer(agenda).data, _rid(request), status.HTTP_201_CREATED
+        )
 
 
 class MeetingAttendanceView(APIView):
     """``POST /api/v1/nbec/meetings/{id}/attendance/`` — Record attendance."""
-    permission_classes = [IsAuthenticated, has_permission("committee:manage")]
+
+    permission_classes = [
+        IsAuthenticated,
+        has_permission_with_step_up("committee:manage"),
+    ]
 
     @extend_schema(
         tags=["NBEC Committee"],
@@ -293,16 +352,22 @@ class MeetingAttendanceView(APIView):
         ser = AttendanceSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         meeting = services.record_attendance(
-            _actor(request), meeting,
+            _actor(request),
+            meeting,
             attendee_ids=ser.validated_data["attendee_ids"],
-            request_id=_rid(request), ip_address=_ip(request),
+            request_id=_rid(request),
+            ip_address=_ip(request),
         )
         return _ok(MeetingSerializer(meeting).data, _rid(request))
 
 
 class MeetingConveneView(APIView):
     """``POST /api/v1/nbec/meetings/{id}/convene/`` — Convene meeting."""
-    permission_classes = [IsAuthenticated, has_permission("committee:manage")]
+
+    permission_classes = [
+        IsAuthenticated,
+        has_permission_with_step_up("committee:manage"),
+    ]
 
     @extend_schema(
         tags=["NBEC Committee"],
@@ -316,8 +381,10 @@ class MeetingConveneView(APIView):
             return _err("NOT_FOUND", "Meeting not found.", status.HTTP_404_NOT_FOUND)
         try:
             meeting = services.convene_meeting(
-                _actor(request), meeting,
-                request_id=_rid(request), ip_address=_ip(request),
+                _actor(request),
+                meeting,
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except ValueError as exc:
             return _err("VALIDATION_ERROR", str(exc), status.HTTP_400_BAD_REQUEST)
@@ -326,7 +393,11 @@ class MeetingConveneView(APIView):
 
 class MeetingAdjournView(APIView):
     """``POST /api/v1/nbec/meetings/{id}/adjourn/`` — Adjourn meeting."""
-    permission_classes = [IsAuthenticated, has_permission("committee:manage")]
+
+    permission_classes = [
+        IsAuthenticated,
+        has_permission_with_step_up("committee:manage"),
+    ]
 
     @extend_schema(
         tags=["NBEC Committee"],
@@ -340,8 +411,10 @@ class MeetingAdjournView(APIView):
             return _err("NOT_FOUND", "Meeting not found.", status.HTTP_404_NOT_FOUND)
         try:
             meeting, minutes = services.adjourn_meeting(
-                _actor(request), meeting,
-                request_id=_rid(request), ip_address=_ip(request),
+                _actor(request),
+                meeting,
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except ValueError as exc:
             return _err("VALIDATION_ERROR", str(exc), status.HTTP_400_BAD_REQUEST)
@@ -352,6 +425,7 @@ class MeetingAdjournView(APIView):
 
 # ── Minutes ───────────────────────────────────────────────────────────────────
 
+
 def _get_minutes(pk):
     try:
         return Minutes.objects.select_related("meeting").get(pk=pk)
@@ -361,7 +435,11 @@ def _get_minutes(pk):
 
 class MinutesSignView(APIView):
     """``POST /api/v1/nbec/minutes/{id}/sign/`` — Chair signs and seals minutes."""
-    permission_classes = [IsAuthenticated, has_permission("committee:manage")]
+
+    permission_classes = [
+        IsAuthenticated,
+        has_permission_with_step_up("committee:manage"),
+    ]
 
     @extend_schema(
         tags=["NBEC Committee"],
@@ -378,9 +456,11 @@ class MinutesSignView(APIView):
         ser.is_valid(raise_exception=True)
         try:
             minutes = services.sign_minutes(
-                _actor(request), minutes,
+                _actor(request),
+                minutes,
                 signature_ref=ser.validated_data.get("signature_ref", ""),
-                request_id=_rid(request), ip_address=_ip(request),
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except ValueError as exc:
             return _err("VALIDATION_ERROR", str(exc), status.HTTP_400_BAD_REQUEST)
@@ -389,7 +469,11 @@ class MinutesSignView(APIView):
 
 class MinutesAddendumView(APIView):
     """``POST /api/v1/nbec/minutes/{id}/addendum/`` — Chair issues addendum."""
-    permission_classes = [IsAuthenticated, has_permission("committee:manage")]
+
+    permission_classes = [
+        IsAuthenticated,
+        has_permission_with_step_up("committee:manage"),
+    ]
 
     @extend_schema(
         tags=["NBEC Committee"],
@@ -406,19 +490,24 @@ class MinutesAddendumView(APIView):
         ser.is_valid(raise_exception=True)
         try:
             addendum = services.issue_addendum(
-                _actor(request), minutes,
+                _actor(request),
+                minutes,
                 content=ser.validated_data["content"],
                 document_ref=ser.validated_data.get("document_ref", ""),
-                request_id=_rid(request), ip_address=_ip(request),
+                request_id=_rid(request),
+                ip_address=_ip(request),
             )
         except ValueError as exc:
             return _err("VALIDATION_ERROR", str(exc), status.HTTP_400_BAD_REQUEST)
         return _ok(
-            MinutesAddendumSerializer(addendum).data, _rid(request), status.HTTP_201_CREATED
+            MinutesAddendumSerializer(addendum).data,
+            _rid(request),
+            status.HTTP_201_CREATED,
         )
 
 
 # ── COI Policy (internal) ──────────────────────────────────────────────────────
+
 
 class COIPolicyView(APIView):
     """``GET /api/v1/nbec/policy/coi/`` — Internal: check active COI for a member/entity.
@@ -427,26 +516,43 @@ class COIPolicyView(APIView):
     Requires ``committee:manage`` or ``audit:export`` — service principals use
     their own JWT with the relevant permission.
     """
-    permission_classes = [IsAuthenticated, has_permission("committee:manage")]
+
+    permission_classes = [
+        IsAuthenticated,
+        has_permission_with_step_up("committee:manage") | has_permission("audit:export"),
+    ]
 
     @extend_schema(
         tags=["NBEC Committee"],
         summary="Check active COI for a member",
         operation_id="nbec_policy_coi_check",
         parameters=[
-            OpenApiParameter("member_id", str, required=True,
-                             description="Keycloak sub UUID of the member"),
-            OpenApiParameter("entity_type", str, required=False,
-                             description="Entity type to check (e.g. 'item', 'candidate')"),
-            OpenApiParameter("entity_id", str, required=False,
-                             description="Entity UUID to check"),
+            OpenApiParameter(
+                "member_id",
+                str,
+                required=True,
+                description="Keycloak sub UUID of the member",
+            ),
+            OpenApiParameter(
+                "entity_type",
+                str,
+                required=False,
+                description="Entity type to check (e.g. 'item', 'candidate')",
+            ),
+            OpenApiParameter(
+                "entity_id", str, required=False, description="Entity UUID to check"
+            ),
         ],
         responses={200: COIPolicyResponseSerializer},
     )
     def get(self, request):
         member_id = request.query_params.get("member_id")
         if not member_id:
-            return _err("VALIDATION_ERROR", "'member_id' is required.", status.HTTP_400_BAD_REQUEST)
+            return _err(
+                "VALIDATION_ERROR",
+                "'member_id' is required.",
+                status.HTTP_400_BAD_REQUEST,
+            )
         entity_type = request.query_params.get("entity_type", "")
         entity_id = request.query_params.get("entity_id") or None
 
