@@ -35,7 +35,15 @@ class JsonExceptionMiddleware:
         try:
             response = self.get_response(request)
         except Exception as exc:
-            if not request.path.startswith("/api/"):
+            path = request.path
+            is_api = (
+                path.startswith("/api/")
+                or path.startswith("/v1/")
+                or path.startswith("/schema/")
+                or path.startswith("/docs/")
+                or path.startswith("/redoc/")
+            )
+            if not is_api:
                 raise
 
             logger.exception("Unhandled API exception")
@@ -52,8 +60,16 @@ class JsonExceptionMiddleware:
     @staticmethod
     def _should_wrap_response(request, response):
         content_type = response.get("Content-Type", "")
+        path = request.path
+        is_api = (
+            path.startswith("/api/")
+            or path.startswith("/v1/")
+            or path.startswith("/schema/")
+            or path.startswith("/docs/")
+            or path.startswith("/redoc/")
+        )
         return (
-            request.path.startswith("/api/")
+            is_api
             and response.status_code >= 400
             and content_type.startswith("text/html")
         )
@@ -79,16 +95,16 @@ class JsonExceptionMiddleware:
 
     def _error_response(self, request, status_code, error_code):
         request_id = str(getattr(request, "request_id", ""))
+        from shared.exceptions import format_rfc7807_error
+
+        data = format_rfc7807_error(
+            status_code=status_code,
+            error_code=error_code,
+            message=self._error_message(status_code),
+            request_id=request_id,
+        )
         return JsonResponse(
-            {
-                "success": False,
-                "error": {
-                    "code": error_code,
-                    "message": self._error_message(status_code),
-                },
-                "meta": {"request_id": request_id},
-            },
-            status=status_code,
+            data, status=status_code, content_type="application/problem+json"
         )
 
 
@@ -99,14 +115,63 @@ class AuditMiddleware(MiddlewareMixin):
     """
 
     def process_request(self, request):
-        request.request_id = uuid.uuid4()
+        traceparent = request.headers.get("traceparent") or request.META.get(
+            "HTTP_TRACEPARENT", ""
+        )
+        tracestate = request.headers.get("tracestate") or request.META.get(
+            "HTTP_TRACESTATE", ""
+        )
+
+        trace_id = None
+        parent_id = None
+        request_uuid = None
+
+        if traceparent:
+            parts = traceparent.split("-")
+            if len(parts) == 4:
+                try:
+                    request_uuid = uuid.UUID(hex=parts[1])
+                    trace_id = parts[1]
+                    parent_id = parts[2]
+                except ValueError:
+                    pass
+
+        if not request_uuid:
+            request_uuid = uuid.uuid4()
+            trace_id = request_uuid.hex
+            import secrets
+
+            parent_id = secrets.token_hex(8)
+            traceparent = f"00-{trace_id}-{parent_id}-01"
+
+        request.request_id = request_uuid
+        request.traceparent = traceparent
+        request.tracestate = tracestate
+
         request.ip_address = self._get_client_ip(request)
         request.user_agent = request.META.get("HTTP_USER_AGENT", "")
+
+        from shared.events import set_request_id, set_trace_context
+
+        set_request_id(request.request_id)
+        set_trace_context(traceparent, tracestate)
 
     def process_response(self, request, response):
         request_id = getattr(request, "request_id", None)
         if request_id:
             response["X-Request-ID"] = str(request_id)
+
+        traceparent = getattr(request, "traceparent", None)
+        if traceparent:
+            response["traceparent"] = traceparent
+        tracestate = getattr(request, "tracestate", None)
+        if tracestate:
+            response["tracestate"] = tracestate
+
+        from shared.events import set_request_id, set_trace_context
+        set_request_id(None)
+        set_trace_context(None, None)
+
         return response
 
     @staticmethod
@@ -156,7 +221,9 @@ class IdempotencyKeyMiddleware:
 
         key = request.META.get(self.HEADER, "").strip()
         if not key:
-            return self._err(request, "Idempotency-Key header is required for this verb.")
+            return self._err(
+                request, "Idempotency-Key header is required for this verb."
+            )
         if len(key) > 64:
             return self._err(request, "Idempotency-Key must be ≤ 64 characters.")
 
@@ -179,7 +246,8 @@ class IdempotencyKeyMiddleware:
             cache.delete(reservation_key)
 
     def _applies(self, request) -> bool:
-        if not request.path.startswith("/api/"):
+        path = request.path
+        if not (path.startswith("/api/") or path.startswith("/v1/")):
             return False
         return request.method in self.MUTATING_METHODS
 
@@ -187,9 +255,9 @@ class IdempotencyKeyMiddleware:
     def _build_cache_key(request, key: str) -> str:
         auth_header = request.META.get("HTTP_AUTHORIZATION", "").strip()
         if auth_header:
-            principal = "auth:" + hashlib.sha256(
-                auth_header.encode("utf-8")
-            ).hexdigest()
+            principal = (
+                "auth:" + hashlib.sha256(auth_header.encode("utf-8")).hexdigest()
+            )
         else:
             principal = f"ip:{AuditMiddleware._get_client_ip(request)}"
         material = "\x1f".join([request.method, request.path, principal, key])
@@ -208,7 +276,9 @@ class IdempotencyKeyMiddleware:
             {
                 "status": response.status_code,
                 "content_type": response.get("Content-Type", "application/json"),
-                "body": body.decode("utf-8", errors="replace") if isinstance(body, bytes) else body,
+                "body": body.decode("utf-8", errors="replace")
+                if isinstance(body, bytes)
+                else body,
             },
             timeout=ttl,
         )
@@ -229,29 +299,28 @@ class IdempotencyKeyMiddleware:
     @staticmethod
     def _err(request, message: str) -> JsonResponse:
         request_id = str(getattr(request, "request_id", ""))
-        return JsonResponse(
-            {
-                "success": False,
-                "error": {"code": "IDEMPOTENCY_KEY_REQUIRED", "message": message},
-                "meta": {"request_id": request_id},
-            },
-            status=400,
+        from shared.exceptions import format_rfc7807_error
+
+        data = format_rfc7807_error(
+            status_code=400,
+            error_code="IDEMPOTENCY_KEY_REQUIRED",
+            message=message,
+            request_id=request_id,
         )
+        return JsonResponse(data, status=400, content_type="application/problem+json")
 
     @staticmethod
     def _in_progress(request) -> JsonResponse:
         request_id = str(getattr(request, "request_id", ""))
-        return JsonResponse(
-            {
-                "success": False,
-                "error": {
-                    "code": "IDEMPOTENCY_KEY_IN_PROGRESS",
-                    "message": "Another request is already processing this Idempotency-Key.",
-                },
-                "meta": {"request_id": request_id},
-            },
-            status=409,
+        from shared.exceptions import format_rfc7807_error
+
+        data = format_rfc7807_error(
+            status_code=409,
+            error_code="IDEMPOTENCY_KEY_IN_PROGRESS",
+            message="Another request is already processing this Idempotency-Key.",
+            request_id=request_id,
         )
+        return JsonResponse(data, status=409, content_type="application/problem+json")
 
 
 class EdgeRateLimitMiddleware:
@@ -285,7 +354,8 @@ class EdgeRateLimitMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        if not request.path.startswith("/api/"):
+        path = request.path
+        if not (path.startswith("/api/") or path.startswith("/v1/")):
             return self.get_response(request)
 
         ip = self._client_ip(request)
@@ -309,12 +379,16 @@ class EdgeRateLimitMiddleware:
 
     # ----- counters ---------------------------------------------------------
 
-    def _record_rejection(self, request, ip: str, *, count_throttle: bool = True) -> None:
+    def _record_rejection(
+        self, request, ip: str, *, count_throttle: bool = True
+    ) -> None:
         throttle_threshold = self._get(
-            "EDGE_THROTTLE_THRESHOLD", 100,
+            "EDGE_THROTTLE_THRESHOLD",
+            100,
         )
         block_threshold = self._get(
-            "EDGE_BLOCK_THRESHOLD_24H", 1000,
+            "EDGE_BLOCK_THRESHOLD_24H",
+            1000,
         )
 
         throttle_count = None
@@ -327,9 +401,13 @@ class EdgeRateLimitMiddleware:
         )
 
         if throttle_count == throttle_threshold:
-            cache.set(self._throttle_key(ip), True, timeout=self.THROTTLE_WINDOW_SECONDS)
+            cache.set(
+                self._throttle_key(ip), True, timeout=self.THROTTLE_WINDOW_SECONDS
+            )
             self._emit_secops(
-                request, ip, category="throttle_applied",
+                request,
+                ip,
+                category="throttle_applied",
                 count=throttle_count,
                 window_seconds=self.THROTTLE_WINDOW_SECONDS,
             )
@@ -337,7 +415,9 @@ class EdgeRateLimitMiddleware:
         if block_count == block_threshold:
             cache.set(self._block_key(ip), True, timeout=self.BLOCK_WINDOW_SECONDS)
             self._emit_secops(
-                request, ip, category="ip_blocked",
+                request,
+                ip,
+                category="ip_blocked",
                 count=block_count,
                 window_seconds=self.BLOCK_WINDOW_SECONDS,
             )
@@ -361,13 +441,16 @@ class EdgeRateLimitMiddleware:
     @staticmethod
     def _too_many(request, message: str, retry_after: int) -> JsonResponse:
         request_id = str(getattr(request, "request_id", ""))
+        from shared.exceptions import format_rfc7807_error
+
+        data = format_rfc7807_error(
+            status_code=429,
+            error_code="RATE_LIMITED",
+            message=message,
+            request_id=request_id,
+        )
         response = JsonResponse(
-            {
-                "success": False,
-                "error": {"code": "RATE_LIMITED", "message": message},
-                "meta": {"request_id": request_id},
-            },
-            status=429,
+            data, status=429, content_type="application/problem+json"
         )
         response["Retry-After"] = str(retry_after)
         return response
@@ -407,7 +490,9 @@ class EdgeRateLimitMiddleware:
         # and resilient to backend differences (LocMem, Redis, ...).
         ttl = cache.ttl(key) if hasattr(cache, "ttl") else None
         if ttl is None or ttl < 1:
-            cache.expire(key, timeout=window_seconds) if hasattr(cache, "expire") else None
+            cache.expire(key, timeout=window_seconds) if hasattr(
+                cache, "expire"
+            ) else None
         return value
 
     @staticmethod
@@ -415,9 +500,12 @@ class EdgeRateLimitMiddleware:
         return getattr(settings, name, default)
 
     @staticmethod
-    def _emit_secops(request, ip: str, *, category: str, count: int, window_seconds: int) -> None:
+    def _emit_secops(
+        request, ip: str, *, category: str, count: int, window_seconds: int
+    ) -> None:
         try:
             from shared.secops import record_security_event
+
             record_security_event(
                 category=category,
                 ip_address=ip,

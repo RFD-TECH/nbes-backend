@@ -30,6 +30,8 @@ Maps:
 Reference: NBES System Architecture §5.2 — Standard Response Envelope
 """
 
+from datetime import datetime, timezone
+from http import HTTPStatus
 from django_fsm import TransitionNotAllowed
 from rest_framework.views import exception_handler
 from rest_framework.response import Response
@@ -37,39 +39,62 @@ from rest_framework import status
 from rest_framework.exceptions import APIException
 
 
+def format_rfc7807_error(
+    status_code: int, error_code: str, message: str, request_id: str, fields=None
+) -> dict:
+    try:
+        title = HTTPStatus(status_code).phrase
+    except ValueError:
+        title = "Error"
+    payload = {
+        "type": f"https://api.nbes.gov.gh/errors/{error_code.lower().replace('_', '-')}",
+        "title": title,
+        "status": status_code,
+        "detail": message,
+        "errorCode": error_code,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "instance": f"urn:nbes:request:{request_id}"
+        if request_id
+        else "urn:nbes:request:unknown",
+    }
+    if fields:
+        payload["invalid_params"] = fields
+    return payload
+
+
 def nbes_exception_handler(exc, context):
-    """Custom DRF exception handler — wraps errors in NBES standard envelope."""
+    """Custom DRF exception handler — wraps errors in RFC 7807 Problem Details."""
     request = context.get("request")
     request_id = str(getattr(request, "request_id", "")) if request else ""
 
     # Handle FSM transition errors specifically
     if isinstance(exc, TransitionNotAllowed):
+        data = format_rfc7807_error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="TRANSITION_NOT_ALLOWED",
+            message=str(exc),
+            request_id=request_id,
+        )
         return Response(
-            {
-                "success": False,
-                "error": {
-                    "code": "TRANSITION_NOT_ALLOWED",
-                    "message": str(exc),
-                },
-                "meta": {"request_id": request_id},
-            },
+            data,
             status=status.HTTP_400_BAD_REQUEST,
+            content_type="application/problem+json",
         )
 
     # Fall through to DRF's default handler for all other exceptions
     response = exception_handler(exc, context)
 
     if response is None:
+        data = format_rfc7807_error(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            error_code="SERVER_ERROR",
+            message="Internal server error.",
+            request_id=request_id,
+        )
         return Response(
-            {
-                "success": False,
-                "error": {
-                    "code": "SERVER_ERROR",
-                    "message": "Internal server error.",
-                },
-                "meta": {"request_id": request_id},
-            },
+            data,
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content_type="application/problem+json",
         )
 
     if response is not None:
@@ -96,15 +121,15 @@ def nbes_exception_handler(exc, context):
             if non_field:
                 message = " ".join(str(e) for e in non_field)
 
-        error = {"code": error_code, "message": message}
-        if fields:
-            error["fields"] = fields
-
-        response.data = {
-            "success": False,
-            "error": error,
-            "meta": {"request_id": request_id},
-        }
+        data = format_rfc7807_error(
+            status_code=response.status_code,
+            error_code=error_code,
+            message=message,
+            request_id=request_id,
+            fields=fields,
+        )
+        response.data = data
+        response.content_type = "application/problem+json"
 
     return response
 
@@ -148,13 +173,15 @@ def error_response(
     Standard NBES error envelope for manual error triggers (bypassing the exception handler).
     Usage: return error_response("Invalid file", code="INVALID_FORMAT")
     """
-    error_payload = {"code": code, "message": message}
-    if errors:
-        error_payload["fields"] = errors
+    request_id = ""
+    if meta and "request_id" in meta:
+        request_id = meta["request_id"]
 
-    response_data = {
-        "success": False,
-        "error": error_payload,
-        "meta": meta if meta is not None else {},
-    }
-    return Response(response_data, status=status_code)
+    data = format_rfc7807_error(
+        status_code=status_code,
+        error_code=code,
+        message=message,
+        request_id=request_id,
+        fields=errors,
+    )
+    return Response(data, status=status_code, content_type="application/problem+json")

@@ -1,4 +1,6 @@
-﻿"""Service functions for item draft creation, versioning, and submission."""
+from __future__ import annotations
+
+# Service functions for item draft creation, versioning, and submission.
 
 import base64
 import io
@@ -32,6 +34,7 @@ from .models import (
     VaultExportRequest,
     Paper,
     ItemUsage,
+    MetadataSchema,
 )
 from apps.audit.models import AuditEvent
 from workflow.guards import has_mandatory_metadata
@@ -338,7 +341,9 @@ def create_metadata_schema(data: dict, admin_auth: dict) -> "MetadataSchema":
     from .models import MetadataSchema
 
     if not shared_rbac.has_permission(admin_auth, "schema:manage"):
-        raise PermissionDenied("Metadata schema management requires the schema:manage permission.")
+        raise PermissionDenied(
+            "Metadata schema management requires the schema:manage permission."
+        )
 
     User = get_user_model()
     try:
@@ -422,7 +427,14 @@ def bulk_retag_items(item_ids: list, updates: dict, admin_auth: dict) -> dict:
     except ObjectDoesNotExist as exc:
         raise ObjectDoesNotExist("Admin user not found for provided auth sub") from exc
 
-    allowed_fields = {"subject", "topic", "difficulty", "cognitive_level", "source", "blueprint_ref"}
+    allowed_fields = {
+        "subject",
+        "topic",
+        "difficulty",
+        "cognitive_level",
+        "source",
+        "blueprint_ref",
+    }
     invalid = set(updates.keys()) - allowed_fields
     if invalid:
         raise ValueError(f"Cannot bulk-update fields: {invalid}")
@@ -965,18 +977,21 @@ def _assert_no_reviewer_conflict(reviewer, item: Item) -> None:
         except NBECMember.DoesNotExist:
             return  # Reviewer is not a tracked NBEC member; no COI to check.
 
-        conflict_exists = ConflictDeclaration.objects.filter(
-            member=member,
-            status=ConflictDeclaration.Status.APPROVED,
-        ).filter(
-            Q(affected_entity_id=item.id)
-            | Q(affected_entity_id=item.author_id_id)
-        ).exists()
+        conflict_exists = (
+            ConflictDeclaration.objects.filter(
+                member=member,
+                status=ConflictDeclaration.Status.APPROVED,
+            )
+            .filter(
+                Q(affected_entity_id=item.id) | Q(affected_entity_id=item.author_id_id)
+            )
+            .exists()
+        )
 
         if conflict_exists:
             raise ValueError(
-                f"Moderator Conflict: Selected reviewer has a declared conflict of interest "
-                f"for this item or its author and cannot be assigned."
+                "Moderator Conflict: Selected reviewer has a declared conflict of interest "
+                "for this item or its author and cannot be assigned."
             )
     except ValueError:
         raise
@@ -984,7 +999,9 @@ def _assert_no_reviewer_conflict(reviewer, item: Item) -> None:
         logger.warning("COI check skipped due to error: %s", exc)
 
 
-def _assert_active_vault_officer(keycloak_sub: str, role_label: str = "officer") -> None:
+def _assert_active_vault_officer(
+    keycloak_sub: str, role_label: str = "officer"
+) -> None:
     """Raise ValueError if the user is not among the designated vault officers.
 
     Resolution order:
@@ -1006,7 +1023,9 @@ def _assert_active_vault_officer(keycloak_sub: str, role_label: str = "officer")
     try:
         from apps.committee.models import NBECMember
 
-        if not NBECMember.objects.filter(keycloak_sub=keycloak_sub, is_active=True).exists():
+        if not NBECMember.objects.filter(
+            keycloak_sub=keycloak_sub, is_active=True
+        ).exists():
             raise ValueError(
                 "Two-Person Approval Required: vault export must be authorised by "
                 f"an active NBEC officer ({role_label} is not a current NBEC member)."
@@ -1040,7 +1059,9 @@ def execute_vault_cosign(request_id: str, cosigner_id: str) -> VaultExportReques
         raise ValueError("The 72-hour validation window for this request has expired.")
 
     # Dual-control: both parties must be designated vault officers (SRS-NBE-F02-07).
-    _assert_active_vault_officer(str(req.requester_id.keycloak_sub), role_label="requester")
+    _assert_active_vault_officer(
+        str(req.requester_id.keycloak_sub), role_label="requester"
+    )
     _assert_active_vault_officer(str(cosigner_user.keycloak_sub), role_label="cosigner")
 
     # Prevent self-signing anti-circumvention rule

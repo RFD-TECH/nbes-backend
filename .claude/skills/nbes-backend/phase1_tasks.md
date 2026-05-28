@@ -1,458 +1,305 @@
 ---
 name: phase1-tasks
-description: Full Phase 1 sprint task breakdown — Authentication, RBAC & Foundation (SRS REQ-F000)
+description: >
+  Full Phase 1 sprint task breakdown — Authentication, RBAC & Foundation (SRS REQ-F000).
+  IAM-Aligned Architecture: NBES delegates authentication, MFA, password policy, and session
+  management to the central IAM (System 19 / Keycloak). NBES receives verified identity and
+  authorisation claims via the API Gateway (System 17). This document replaces the previous
+  version that assumed local authentication.
 metadata:
   type: project
+  version: 2.0
+  updated: 2026-05-23
+  architecture: iam-delegated
 ---
 
-# Phase 1 — Authentication, RBAC & Foundation
+# Phase 1 — Authentication, RBAC & Foundation (IAM-Aligned)
 SRS ref: REQ-F000 | 3 sprints (3 weeks)
 
 ---
 
-## PRE-WORK: Fix Critical Bugs (before Sprint 1.1 begins)
+## Architectural Principle
 
-These 5 bugs must be fixed before any sprint work is testable.
-
-### BUG-01 — Fix dev.py wiping DRF config
-**File:** `config/settings/dev.py`
-**Problem:** `REST_FRAMEWORK = {**globals().get("REST_FRAMEWORK", {})}` is a no-op after `from .base import *` — it wipes the JWT auth class and custom exception handler in dev.
-**Fix:** Remove the `REST_FRAMEWORK` block entirely from `dev.py`. Base settings already define it correctly.
-**Acceptance:** JWT Bearer tokens are accepted by the dev server.
-
-### BUG-02 — Fix SECRET_KEY can be None
-**File:** `config/settings/base.py:9`
-**Problem:** `os.environ.get("SECRET_KEY")` returns None if env var unset.
-**Fix:** Change to `os.environ["SECRET_KEY"]` (no `.get()`). Server fails loudly at startup if missing.
-**Acceptance:** Starting server without SECRET_KEY set prints a clear KeyError, not a silent None.
-
-### BUG-03 — Fix timezone.timedelta crash in cert_trigger
-**File:** `apps/cert_trigger/models.py:47`
-**Problem:** `timezone.timedelta` does not exist on `django.utils.timezone`.
-**Fix:** `from datetime import timedelta` and use `timedelta(hours=1)`.
-**Acceptance:** `CertTriggerRecord.fire()` no longer raises AttributeError.
-
-### BUG-04 — Fix nlems_eligibility_verified guard
-**File:** `workflow/guards.py:77`
-**Problem:** Checks `instance.eligibility_status` on `Registration`, which has no such field. Should check `instance.candidate.eligibility_status`.
-**Fix:** `return instance.candidate.eligibility_status == "eligible"`
-**Acceptance:** Guard returns correct value; registration FSM payment transition unblocked.
-
-### BUG-05 — Fix AuditEvent race condition
-**File:** `apps/audit/models.py:55`
-**Problem:** `cls.objects.order_by("-id").values("chain_hash").first()` without `select_for_update()` — concurrent writes fork the hash chain.
-**Fix:** Wrap the `record()` method body in `with transaction.atomic(): cls.objects.select_for_update().order_by("-id")...`
-**Acceptance:** Concurrent audit writes produce a linear chain, not a fork.
+> **NBES does not own authentication.** The IAM (System 19 / Keycloak) handles login, MFA,
+> password policies, session management, and credential storage. NBES trusts the signed
+> headers the API Gateway (System 17) adds to every inbound request.
+>
+> NBES owns:
+> - **Local user profile store** (first_name, last_name, status, metadata — NOT passwords)
+> - **RBAC enforcement** (role → permission matrix, mutual-exclusion rules)
+> - **IAM bridge** (provisioning users in IAM via admin API, syncing roles)
+> - **Audit substrate** (append-only event store, daily hash chain)
+> - **Step-up policy enforcement** (checking `x-acr` / `x-mfa-verified` headers from the gateway)
+>
+> The following are **IAM responsibilities** and are NOT implemented in NBES:
+> - Login / logout / token refresh endpoints
+> - Password storage, hashing, policy enforcement, HIBP checks
+> - MFA enrolment (TOTP, WebAuthn, SMS)
+> - Session management, refresh tokens
+> - Account lockout / auto-unlock
+> - Invite email dispatch (IAM sends the invite with first-time-login link)
 
 ---
 
-## Sprint 1.1 — Identity & MFA Core (Week 1)
+## PRE-WORK: Critical Bug Fixes (All resolved)
 
-**Goal:** A user can be created, log in with a password, configure MFA, and have their session managed.
-
----
-
-### TASK-1.1.1 — Expand UserProfile model (data model additions §1.5.1)
-**File:** `apps/users/models.py`
-**What to add:**
-- `first_name` CharField(max_length=100)
-- `last_name` CharField(max_length=100)
-- `status` CharField with choices: `active`, `inactive`, `locked`, `pending_mfa` (default: `pending_mfa`)
-- `mfa_enrolled` BooleanField(default=False)
-- `password_hash` CharField(max_length=255, blank=True) — stores bcrypt hash; Django's `make_password()` / `check_password()`
-- `password_changed_at` DateTimeField(null=True)
-- `failed_login_count` PositiveSmallIntegerField(default=0)
-- `locked_until` DateTimeField(null=True, blank=True) — set on 5th failed login
-- `last_login_at` DateTimeField(null=True, blank=True)
-- `deactivated_at` DateTimeField(null=True, blank=True)
-- `created_by` ForeignKey('self', null=True, on_delete=SET_NULL)
-- `invite_token` UUIDField(null=True, blank=True) — single-use first-time-login token
-- `invite_expires_at` DateTimeField(null=True, blank=True)
-
-**Note:** Keep `keycloak_sub` but make it nullable — in dev we create users directly. In prod, Keycloak owns this.
-
-**Acceptance:** Model fields match §1.5.1 `user` table definition.
+| Bug | File | Status |
+|-----|------|--------|
+| BUG-01 — dev.py wiping DRF config | `config/settings/dev.py` | Fixed — REST_FRAMEWORK block removed |
+| BUG-02 — SECRET_KEY can be None | `config/settings/base.py` | Fixed — uses `os.environ["SECRET_KEY"]` |
+| BUG-03 — timezone.timedelta crash | `apps/cert_trigger/models.py` | Fixed — uses `datetime.timedelta` |
+| BUG-04 — nlems guard checks wrong field | `workflow/guards.py` | Fixed — checks `candidate.eligibility_status` |
+| BUG-05 — AuditEvent race condition | `apps/audit/models.py` | Fixed — uses `select_for_update()` in `_record_atomic()` |
 
 ---
 
-### TASK-1.1.2 — Add LoginAttempt and Session models (§1.5.1)
-**File:** `apps/users/models.py` (add below UserProfile)
+## Sprint 1.1 — IAM Bridge & User Profile Store (Week 1)
 
-**LoginAttempt model:**
-```
-id, user (FK nullable — failed attempts may have no valid user), ip_address,
-user_agent, outcome (choices: success/failure/locked/mfa_required),
-occurred_at (auto_now_add)
-```
-
-**Session model:**
-```
-id (UUID), user (FK), issued_at, expires_at, mfa_verified_at (null),
-revoked_at (null), ip_address, user_agent, is_active (property: not revoked and not expired)
-```
-
-**Acceptance:** LoginAttempt written on every auth attempt. Session row created on successful login.
+**Goal:** An Administrator can create, edit, deactivate, and delete user profiles via the API. Each profile is provisioned in IAM (Keycloak) and stored locally with lifecycle states. Role assignment uses a proper join table with effective dates.
 
 ---
 
-### TASK-1.1.3 — Add MFAEnrolment model (§1.5.1)
+### TASK-1.1.1 — Expand UserProfile model (§1.5.1, GAP-01)
 **File:** `apps/users/models.py`
 
-**MFAEnrolment model:**
+**Current state:** Skeletal model with only `keycloak_sub`, `email`, `role` (CharField).
+
+**Changes:**
+```python
+class UserProfile(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    keycloak_sub = models.UUIDField(unique=True, null=True, blank=True,
+        help_text="IAM subject identifier. Null until IAM provisioning completes.")
+    email = models.EmailField(unique=True)
+    first_name = models.CharField(max_length=100)
+    last_name = models.CharField(max_length=100)
+    status = models.CharField(max_length=20, choices=[
+        ("pending_invite", "Pending Invite"),   # Created locally, IAM invite pending
+        ("active", "Active"),                    # IAM account active, profile complete
+        ("inactive", "Inactive"),                # Deactivated by admin
+    ], default="pending_invite")
+    metadata = models.JSONField(default=dict, blank=True,
+        help_text="Extensible fields: national_id, department, phone, etc.")
+    created_by = models.ForeignKey('self', null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='created_profiles')
+    deactivated_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 ```
-id (UUID), user (FK OneToMany — one per factor type), 
-factor_type (choices: totp, webauthn, sms),
-credential_ref (TextField — for TOTP: encrypted secret; for WebAuthn: credential_id + public_key JSON; for SMS: phone number),
-is_active (BooleanField),
-last_used_at (DateTimeField null)
+
+**Remove:** The `role` CharField. Multi-role support is via the `UserRole` model (TASK-1.1.2).
+
+**Keep:** `keycloak_sub` but make it `null=True, blank=True` — it's set when IAM provisioning completes.
+
+**Migration:** Create a data migration that migrates existing `role` values to `UserRole` rows.
+
+**Acceptance:** `UserProfile` fields match the IAM-aligned §1.5.1 `user` table definition. No `password_hash`, `mfa_enrolled`, `failed_login_count`, `locked_until`, or `invite_token` fields (those are IAM's responsibility).
+
+---
+
+### TASK-1.1.2 — Add UserRole join table + RoleChangeEvent (§1.5.1, GAP-02, GAP-10)
+**File:** `apps/users/models.py`
+
+**UserRole model:**
+```python
+class UserRole(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(UserProfile, on_delete=models.CASCADE, related_name='user_roles')
+    role = models.ForeignKey(Role, on_delete=models.CASCADE, related_name='user_roles')
+    effective_from = models.DateField()
+    effective_to = models.DateField(null=True, blank=True,
+        help_text="Null = open-ended assignment")
+    assigned_by = models.ForeignKey(UserProfile, null=True, on_delete=models.SET_NULL,
+        related_name='role_assignments_made')
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoke_reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'role'],
+                condition=models.Q(revoked_at__isnull=True),
+                name='unique_active_user_role',
+            )
+        ]
 ```
 
-**Acceptance:** A user can have multiple enrolments. `user.mfa_enrolled` is True when at least one active MFAEnrolment exists.
+**RoleChangeEvent model (event sourcing — immutable log):**
+```python
+class RoleChangeEvent(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(UserProfile, on_delete=models.CASCADE, related_name='role_events')
+    role = models.ForeignKey(Role, on_delete=models.CASCADE)
+    change_type = models.CharField(max_length=10, choices=[
+        ("assign", "Assigned"),
+        ("revoke", "Revoked"),
+    ])
+    actor = models.ForeignKey(UserProfile, null=True, on_delete=models.SET_NULL,
+        related_name='role_changes_made')
+    reason = models.TextField(blank=True)
+    occurred_at = models.DateTimeField(auto_now_add=True)
 
----
-
-### TASK-1.1.4 — Create migrations for all apps
-**Command:** `python manage.py makemigrations users audit committee itembank registration marking results cert_trigger sla resit`
-Then: `python manage.py migrate`
-
-**Acceptance:** `python manage.py showmigrations` shows all apps with `[X]` checkmarks. No migration errors.
-
----
-
-### TASK-1.1.5 — Implement login endpoint (§1.6: POST /api/v1/auth/login)
-**Files:** `apps/users/views.py`, `apps/users/serializers.py`, `apps/users/urls.py`
-
-**What it does:**
-1. Accept `{"email": "...", "password": "..."}`
-2. Look up `UserProfile` by email (case-insensitive)
-3. Check `user.status != "inactive"` and `user.status != "locked"` (check `locked_until`)
-4. Verify password with `check_password(raw, user.password_hash)`
-5. On failure: increment `failed_login_count`; if `failed_login_count >= 5`, set `status="locked"`, `locked_until=now()+15min`, send lockout email via System 21 stub
-6. On failure: write `LoginAttempt(outcome="failure")`, write `AuditEvent(action="AUTH_FAILED")`
-7. On success: reset `failed_login_count=0`, set `last_login_at=now()`, create `Session` row
-8. If `mfa_enrolled=True` on user: return `{"success": true, "data": {"mfa_required": true, "session_token": "<partial-token>"}}` — do NOT return full JWT yet
-9. If `mfa_enrolled=False` and user is internal role: return `{"success": true, "data": {"mfa_required": true, "setup_required": true}}` — force MFA setup before issuing JWT
-10. If `mfa_enrolled=False` and user is `candidate` role: issue JWT immediately
-11. JWT payload: `{"sub": str(user.id), "email": user.email, "role": user.role, "session_id": str(session.id), "exp": now+8h}`
-12. Sign with `settings.JWT_SECRET_KEY` using HS256
-
-**Rate limit:** Max 10 requests/minute per IP using DRF throttling (`AnonRateThrottle`).
-
-**Response envelope:** `{"success": true/false, "data": {...}, "error": {...}, "meta": {"request_id": "..."}}`
-
-**Acceptance (F000-01):** Valid credentials return JWT. Invalid credentials increment counter. 5th failure locks account and sends email.
-
----
-
-### TASK-1.1.6 — Implement MFA challenge/response endpoint (§1.6: POST /api/v1/auth/mfa)
-**Files:** `apps/users/views.py`, `apps/users/serializers.py`
-
-**What it does:**
-1. Accept `{"partial_token": "...", "factor_type": "totp", "code": "123456"}`
-2. Validate partial_token (short-lived, signed, contains session_id)
-3. Look up user's active MFAEnrolment for that factor_type
-4. **TOTP:** `import pyotp; totp = pyotp.TOTP(enrolment.credential_ref); totp.verify(code)` — accepts codes within 1 window (±30s)
-5. **WebAuthn:** stub in Phase 1.1; return `NotImplementedError` with clear message — implement in Sprint 1.2
-6. **SMS:** stub in Phase 1.1 (full SMS via System 21 in Phase 9)
-7. On success: update `Session.mfa_verified_at=now()`, issue full JWT with `mfa_verified: true` claim
-8. Write `LoginAttempt(outcome="success")`, `AuditEvent(action="AUTH_MFA_SUCCESS")`
-9. On failure: `AuditEvent(action="AUTH_MFA_FAILED")`
-
-**Acceptance (F000-03):** TOTP code accepted within window; invalid code rejected. Full JWT only issued after MFA.
-
----
-
-### TASK-1.1.7 — Implement TOTP enrolment endpoint
-**Files:** `apps/users/views.py`
-
-**What it does:**
-1. `GET /api/v1/auth/mfa/totp/setup` — generate a new TOTP secret (`pyotp.random_base32()`), return QR code URI and the secret
-2. Secret is NOT saved yet — only saved after the user confirms with a valid code
-3. `POST /api/v1/auth/mfa/totp/confirm` — `{"secret": "...", "code": "..."}` — verifies code, saves `MFAEnrolment`, sets `user.mfa_enrolled=True`
-4. Write `AuditEvent(action="MFA_ENROLLED", entity_type="user")`
-
-**Requires pyotp:** Add `pyotp` to `requirements.txt`.
-
-**Acceptance:** User can scan QR, enter code, and have TOTP enrolment confirmed. Second call to `/setup` after enrolment returns error "MFA already enrolled."
-
----
-
-### TASK-1.1.8 — Implement token refresh endpoint (§1.6: POST /api/v1/auth/refresh)
-**Files:** `apps/users/views.py`
-
-**What it does:**
-1. Accept `{"refresh_token": "..."}` (separate long-lived refresh token issued at login, 24h expiry)
-2. Validate refresh token, check `Session.revoked_at is None` and `Session.expires_at > now()`
-3. Issue a new short-lived access JWT (8h)
-4. Write `AuditEvent(action="TOKEN_REFRESHED")`
-
-**Acceptance:** Valid refresh token returns new access JWT. Revoked session refresh returns 401.
-
----
-
-### TASK-1.1.9 — Implement logout endpoint (§1.6: POST /api/v1/auth/logout)
-**Files:** `apps/users/views.py`
-
-**What it does:**
-1. Authenticated request only
-2. Set `Session.revoked_at = now()` for the session in the current JWT (`session_id` claim)
-3. Write `AuditEvent(action="AUTH_LOGOUT")`
-4. Return `{"success": true}`
-
-**Note:** JWT tokens are stateless — logout works by revoking the Session record. The auth middleware must check `Session.revoked_at is None` on every request (or use Redis cache for revoked session IDs).
-
-**Acceptance:** After logout, the same JWT returns 401 on next use.
-
----
-
-### TASK-1.1.10 — Implement password policy validation
-**File:** `apps/users/services.py` — function `validate_password(raw_password) -> list[str]`
-
-**Rules from §1.2.3:**
-- Minimum 12 characters
-- Must contain: uppercase, lowercase, digit, special character
-- Must NOT be in the last 12 passwords (check `PasswordHistory` model — add this model)
-- SHOULD check against HaveIBeenPwned API (k-anonymity SHA-1 prefix method): `GET https://api.pwnedpasswords.com/range/{first5}` — if count > 0, reject
-
-**PasswordHistory model** (add to `apps/users/models.py`):
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'occurred_at']),
+            models.Index(fields=['role', 'occurred_at']),
+        ]
 ```
-id, user (FK), password_hash, created_at
+
+**Acceptance:** A user can have multiple active roles. `RoleChangeEvent` is the immutable log; `UserRole` is the current-state projection. Query "what roles did user X have on date Y?" is answerable.
+
+---
+
+### TASK-1.1.3 — Add `is_internal` + `version` to Role model (GAP-14, GAP-11)
+**File:** `apps/users/models.py`
+
+**Add to existing `Role` model:**
+```python
+is_internal = models.BooleanField(default=True,
+    help_text="Internal roles require MFA. Candidate is the only external role.")
+version = models.PositiveIntegerField(default=1,
+    help_text="Incremented on permission matrix changes for this role.")
 ```
-Keep last 12 rows per user; on new password, check none match, then insert and delete oldest if > 12.
 
-**Acceptance:** Password "Password1!" passes. "password" fails (no uppercase, no special, too short-ish). "correct horse battery staple" fails (no digit/special). "P@ssw0rd123!" passes all rules.
-
----
-
-### TASK-1.1.11 — Implement account lockout Celery task (auto-unlock)
-**File:** `apps/users/tasks.py`
-
-**Task:** `unlock_expired_accounts` — runs every 5 minutes via Celery Beat.
-- Find all `UserProfile` where `status="locked"` and `locked_until < now()`
-- Set `status="active"`, `failed_login_count=0`, `locked_until=None`
-- Write `AuditEvent(action="ACCOUNT_AUTO_UNLOCKED")` for each
-
-**Add to `config/celery.py` Beat schedule.**
-
-**Acceptance (F000-06):** Account locked at T=0 becomes `active` automatically after 15 minutes.
+**Acceptance:** `Role.objects.filter(is_internal=False)` returns only `candidate`. Version increments on permission changes (see TASK-1.2.1).
 
 ---
 
-### TASK-1.1.12 — Implement invite email on account creation (§1.2.1)
-**File:** `apps/users/services.py` — function `send_invite_email(user: UserProfile)`
+### TASK-1.1.4 — Expand IAM bridge: create, deactivate, assign (§1.2.1, GAP-04)
+**File:** `shared/keycloak_admin.py`
 
-**What it does:**
-1. Generate `invite_token = uuid4()`, set `invite_expires_at = now() + 7 days`
-2. Save to user
-3. Send email via `django.core.mail.send_mail` (in dev: prints to console per `EMAIL_BACKEND`)
-4. Email body contains first-time-login link: `https://{FRONTEND_URL}/auth/first-login?token={invite_token}`
+**Add functions (alongside existing `revoke_realm_role`):**
 
-**Acceptance:** Creating a user via the admin console (TASK-1.1.13) sends an email within 5 minutes (F000-01 acceptance).
+```python
+def create_user(email: str, first_name: str, last_name: str,
+                roles: list[str], *, send_invite: bool = True) -> str:
+    """Provision user in IAM. Returns the IAM user UUID (sub).
+
+    In dev (KEYCLOAK_ENABLED=False): returns a generated UUID.
+    In prod: POST to Keycloak Admin API /auth/admin/realms/{realm}/users
+    with emailVerified=False, enabled=True, requiredActions=["VERIFY_EMAIL", "UPDATE_PASSWORD"].
+    If send_invite=True, Keycloak sends the invite email with first-time-login link.
+    Assigns NBES client roles via POST /role-mappings/clients/{client-id}.
+    """
+
+def deactivate_user(user_sub: str) -> None:
+    """Disable IAM account and revoke all active sessions.
+
+    PUT /auth/admin/realms/{realm}/users/{sub} with enabled=False.
+    DELETE /auth/admin/realms/{realm}/users/{sub}/sessions (revoke all sessions).
+    """
+
+def assign_client_role(user_sub: str, role_name: str) -> None:
+    """Assign an NBES client role to a user in IAM.
+
+    POST /auth/admin/realms/{realm}/users/{sub}/role-mappings/clients/{nbes-client-id}
+    """
+
+def remove_client_role(user_sub: str, role_name: str) -> None:
+    """Remove an NBES client role from a user in IAM.
+
+    DELETE /auth/admin/realms/{realm}/users/{sub}/role-mappings/clients/{nbes-client-id}
+    """
+
+def bulk_create_users(users: list[dict]) -> list[dict]:
+    """Batch provision users in IAM.
+
+    For each user: call create_user(). Returns list of
+    {"email": str, "sub": str | None, "error": str | None}.
+    Uses individual calls — Keycloak has no batch endpoint.
+    """
+```
+
+**Error handling:** All functions must:
+1. Log the call with correlation_id
+2. Retry 3x with exponential backoff on 5xx
+3. Raise `IntegrationError(retryable=True/False)` on permanent failure
+4. Write `AuditEvent` on success and failure
+
+**Dev mode:** When `KEYCLOAK_ENABLED=False`, all functions log the call and return stub values. No-op in dev.
+
+**Acceptance:** `create_user("test@gsl.edu.gh", "Kwame", "Mensah", ["examiner"])` returns a UUID. In dev, returns a generated UUID. In prod, creates the Keycloak user and returns their `sub`.
 
 ---
 
-### TASK-1.1.13 — Admin User Console — Create user endpoint (§1.6: POST /api/v1/admin/users)
-**Files:** `apps/users/views.py`, `apps/users/serializers.py`
+### TASK-1.1.5 — Admin User CRUD: Create user endpoint (§1.6, GAP-03)
+**Files:** `apps/users/views.py`, `apps/users/serializers.py`, `apps/users/services.py`
 
-**Permission:** `system-administrator` role only.
+**Endpoint:** `POST /api/v1/admin/users`
+**Permission:** `users:manage` (system-administrator only)
 
-**Accepted body:**
+**Request body:**
 ```json
 {
   "first_name": "Kwame",
   "last_name": "Mensah",
   "email": "kmensah@gsl.edu.gh",
-  "role": "examiner",
+  "roles": ["examiner"],
   "effective_date": "2026-05-20",
-  "id_number": "GHA-12345"   // optional
+  "metadata": {"national_id": "GHA-12345", "department": "Legal"}
 }
 ```
 
-**What it does:**
-1. Validate email uniqueness (case-insensitive: `UserProfile.objects.filter(email__iexact=email).exists()`)
-2. Validate `role` is in `ROLE_PERMISSION_MAP` keys (or a separate roles list)
-3. Create `UserProfile` with `status="pending_mfa"`, no password set yet
-4. Call `send_invite_email(user)`
-5. Write `AuditEvent(action="USER_CREATED", entity_type="user", actor_id=request.auth["sub"], old_state=None, new_state={...}, ip_address=request.ip_address)`
-6. Return 201 with user data
+**Service logic (`apps/users/services.py` → `create_user()`):**
+1. Validate email uniqueness (case-insensitive)
+2. Validate each role exists in `Role` table and is active
+3. Check mutual-exclusion rules (TASK-1.2.3, can stub initially)
+4. Call `keycloak_admin.create_user(email, first_name, last_name, roles)` → get `iam_sub`
+5. Create `UserProfile(keycloak_sub=iam_sub, status="pending_invite", created_by=request_user)`
+6. Create `UserRole` for each role with `effective_from=effective_date, assigned_by=request_user`
+7. Create `RoleChangeEvent(change_type="assign")` for each role
+8. Write `AuditEvent(action="USER_CREATED", entity_type="user", old_state=None, new_state={...})`
+9. Publish `UserCreated` outbox event
+10. Return 201 with user data
 
-**Acceptance (F000-01):** Creates account, invite email dispatched. Duplicate email returns 400.
+**Compensatory action:** If IAM provisioning fails after local profile creation, mark profile `status="pending_invite"` with `keycloak_sub=None` and log the failure. A retry task can re-attempt IAM provisioning.
+
+**Acceptance (F000-01):** Admin creates Examiner → profile exists + IAM account created + invite email sent by IAM within 5 min. Duplicate email → 400.
 
 ---
 
-### TASK-1.1.14 — Admin User Console — Edit/deactivate/delete endpoint (§1.6: PATCH /api/v1/admin/users/{id})
-**Files:** `apps/users/views.py`, `apps/users/serializers.py`
+### TASK-1.1.6 — Admin User CRUD: Edit/deactivate endpoint (§1.6, GAP-05)
+**Files:** `apps/users/views.py`, `apps/users/serializers.py`, `apps/users/services.py`
 
-**Permission:** `system-administrator` only.
+**Endpoint:** `PATCH /api/v1/admin/users/{id}`
+**Permission:** `users:manage`
 
-**Edit:** PATCH with any subset of `{first_name, last_name, email, role, effective_date}`
-**Deactivate:** PATCH with `{"status": "inactive"}` — sets `deactivated_at=now()`, sends notification email
-**Logical delete:** PATCH with `{"deleted": true}` — sets `status="deleted"`, preserves all data (retention)
+**Supported operations:**
+- **Edit:** PATCH with `{first_name, last_name, email, metadata}` subset
+- **Deactivate:** PATCH with `{"status": "inactive"}` → calls `keycloak_admin.deactivate_user(sub)` → sets `deactivated_at=now()`, sends notification
+- **Logical delete:** PATCH with `{"deleted": true}` → sets `status="inactive"`, preserves data (15-year retention)
 
-**Constraint:** Cannot deactivate a user with open active assignments (Phase 3/9 will add specific checks; for now, the check is a placeholder that always passes).
+**Constraint (GAP-06):** Cannot deactivate a user with open active assignments. For now, implement as a stub guard that checks `UserRole.objects.filter(user=user, revoked_at__isnull=True).exists()` — later phases add specific assignment checks (scripts in marking queue, etc.).
 
 **Audit:** Every change writes `AuditEvent(action="USER_UPDATED", old_state={...before...}, new_state={...after...})`.
 
-**Acceptance:** PATCH changes fields. Deactivation sets `deactivated_at`. Audit entry shows before/after.
+**Acceptance:** PATCH changes fields. Deactivation calls IAM, sets `deactivated_at`, sets status. Audit entry shows before/after.
 
 ---
 
-### TASK-1.1.15 — First-time-login endpoint (accept invite token)
-**File:** `apps/users/views.py` — `POST /api/v1/auth/first-login`
-
-**What it does:**
-1. Accept `{"token": "...", "password": "...", "confirm_password": "..."}`
-2. Find user by `invite_token`, check `invite_expires_at > now()`
-3. Run password policy validation (TASK-1.1.10)
-4. Hash password with `make_password(raw)`, save to `user.password_hash`
-5. Clear `invite_token`, `invite_expires_at`
-6. Set `user.status = "pending_mfa"` (MFA setup required before first real login)
-7. Write `AuditEvent(action="FIRST_LOGIN_PASSWORD_SET")`
-8. Return `{"success": true, "data": {"mfa_setup_required": true}}`
-
-**Acceptance:** Invite link works once. Second use of same token returns 400 "invalid or expired token."
-
----
-
-## Sprint 1.2 — Roles, Permissions & RBAC Gateway (Week 2)
-
-**Goal:** Configurable role/permission matrix, mutual-exclusion rules, two-approver flow for high-privilege roles, bulk import, WebAuthn MFA.
-
----
-
-### TASK-1.2.1 — Add Role and Permission models (§1.5.1)
-**File:** `apps/users/models.py`
-
-**Role model:**
-```
-id (UUID), name (unique, e.g. "nbec-member"), description, is_internal (bool),
-created_at
-```
-
-**Permission model:**
-```
-id (UUID), scope (e.g. "item"), resource (e.g. "item"), action (e.g. "approve"),
-code (unique, e.g. "item:approve"), created_at
-```
-
-**RolePermission model:**
-```
-id, role (FK Role), permission (FK Permission), unique_together(role, permission)
-```
-
-**UserRole model:**
-```
-id (UUID), user (FK UserProfile), role (FK Role),
-effective_from (DateField), effective_to (DateField null — open-ended),
-assigned_by (FK UserProfile null), revoked_at (DateTimeField null),
-revoke_reason (TextField blank)
-```
-
-**Seed data migration:** Create a `RunPython` migration that populates `Role` and `Permission` from `ROLE_PERMISSION_MAP` in `shared/permissions.py`. All 15 SRS roles must exist:
-`nbec-member, nbec-secretariat, item-writer, moderator, examiner, candidate, clet-registrar, invigilator, centre-coordinator, remote-proctor, dti-operations, service-desk-agent, auditor, system-administrator, director-general`
-
-**Acceptance:** `python manage.py shell` → `Role.objects.count()` returns 15.
-
----
-
-### TASK-1.2.2 — Update ROLE_PERMISSION_MAP with all missing roles (§1.2.2)
-**File:** `shared/permissions.py`
-
-**Add permissions for missing roles:**
-```python
-"users:manage":            ["system-administrator"],
-"users:import":            ["system-administrator"],
-"audit:view":              ["auditor", "director-general", "system-administrator"],
-"audit:export":            ["auditor", "director-general"],
-"security:view":           ["system-administrator", "dti-operations"],
-"centre:manage":           ["centre-coordinator", "dti-operations"],
-"centre:invigilate":       ["invigilator"],
-"proctoring:remote":       ["remote-proctor"],
-"helpdesk:support":        ["service-desk-agent"],
-"dg:overview":             ["director-general"],
-"sitting:invigilate":      ["invigilator", "centre-coordinator"],
-```
-
-**Update HasPermission** to also check `UserRole` table (TASK-1.2.1) rather than only `request.auth["role"]`. UserRole is the authoritative source; JWT role is a cached hint only.
-
-**Acceptance:** An `auditor` JWT can access `GET /api/v1/audit/search`. An `item-writer` JWT gets 403 on the same endpoint.
-
----
-
-### TASK-1.2.3 — Mutual-exclusion rule enforcement (§1.2.2)
-**File:** `apps/users/services.py` — function `assign_role(user, role, assigned_by, effective_from)`
-
-**Mutually exclusive pairs (from SRS):**
-- `item-writer` ↔ `moderator` (same item — enforced at Phase 3; at Phase 1, block coexistence entirely)
-- `invigilator` ↔ `candidate` (always blocked)
-- Any pair from: `{system-administrator, director-general, nbec-member}` with `candidate`
-
-**What it does:**
-1. Check if user already has any role in the exclusion group
-2. If yes, return error `{"code": "ROLE_MUTUAL_EXCLUSION", "message": "User already has role X which conflicts with Y"}`
-3. If the role is high-privilege (`nbec-member` with Chair designation, `director-general`, `system-administrator`): create a `RoleAssignmentApproval` record (see TASK-1.2.4) instead of activating immediately
-4. Otherwise: create `UserRole(effective_from=effective_from)`, write `AuditEvent(action="ROLE_ASSIGNED")`
-5. Publish `RoleChanged` outbox event so downstream systems invalidate cached permissions within 60 seconds
-
-**Acceptance (F000-02):** Assigning `invigilator` to a `candidate` returns 400 with `ROLE_MUTUAL_EXCLUSION`. Assigning `examiner` to an `item-writer` returns 400.
-
----
-
-### TASK-1.2.4 — Two-approver flow for high-privilege roles (§1.2.2)
-**File:** `apps/users/models.py` — add `RoleAssignmentApproval` model
-
-```
-id (UUID), user (FK), role (FK), requested_by (FK UserProfile),
-first_approval_by (FK UserProfile null), first_approval_at (DateTimeField null),
-status (choices: pending/approved/rejected), created_at
-```
-
-**Endpoint:** `POST /api/v1/admin/role-approvals/{id}/approve` — second administrator approves.
-
-**What it does:**
-1. On first approval: set `first_approval_by`, `first_approval_at`
-2. Second administrator (different from requester AND first approver) calls approve: creates `UserRole`, writes audit
-3. Same administrator cannot provide both approvals — return 400 `SELF_APPROVAL_NOT_PERMITTED`
-
-**Acceptance (§1.2.2):** High-privilege assignment pends until a second administrator approves. One admin cannot self-approve.
-
----
-
-### TASK-1.2.5 — Role assignment and revocation endpoints (§1.6)
-**File:** `apps/users/views.py`
+### TASK-1.1.7 — Admin User CRUD: List/detail endpoints
+**Files:** `apps/users/views.py`, `apps/users/serializers.py`
 
 **Endpoints:**
-- `POST /api/v1/admin/users/{id}/roles` — body: `{"role": "examiner", "effective_from": "2026-05-20"}`
-- `DELETE /api/v1/admin/users/{id}/roles/{role_name}` — body: `{"reason": "..."}`
+- `GET /api/v1/admin/users` — Paginated list with filters (status, role, search by name/email)
+- `GET /api/v1/admin/users/{id}` — Full profile with active roles and permissions
 
-**Role revocation:**
-1. Set `UserRole.revoked_at = now()`, `revoke_reason = reason`
-2. Publish `RoleChanged` outbox event
-3. Write `AuditEvent(action="ROLE_REVOKED", old_state={"role": ...})`
+**Permission:** `users:manage`
 
-**List roles for user:**
-- `GET /api/v1/admin/users/{id}/roles` — returns active UserRole records
+**Filters:** `?status=active&role=examiner&search=kwame&page=1&page_size=20`
 
-**Acceptance:** Revoking a role publishes `RoleChanged` event; within 60 seconds the user's next API call is 403 for that role's endpoints.
+**Acceptance:** List returns paginated users. Detail returns full profile with resolved permissions.
 
 ---
 
-### TASK-1.2.6 — Role and permission matrix endpoints (§1.6)
-**File:** `apps/users/views.py`
+### TASK-1.1.8 — Unified `/api/v1/me` endpoint (§1.6, GAP-08)
+**Files:** `apps/users/views.py`, `apps/users/serializers.py`
 
-**Endpoints:**
-- `GET /api/v1/admin/roles` — list all roles with their permissions (system-administrator only)
-- `POST /api/v1/admin/roles/{id}/permissions` — body: `{"add": ["audit:export"], "remove": ["audit:view"]}` — update role permissions
-- Every permission change writes `AuditEvent(action="ROLE_PERMISSIONS_UPDATED")`
+**Endpoint:** `GET /api/v1/me`
+**Permission:** `IsAuthenticated` (any authenticated user)
 
-**Acceptance:** Administrator can view and update the permission matrix via the API. Changes reflected on next request.
-
----
-
-### TASK-1.2.7 — Current user profile endpoint (§1.6: GET /api/v1/me)
-**File:** `apps/users/views.py`
-
-**What it returns:**
+**Response:**
 ```json
 {
   "success": true,
@@ -461,333 +308,687 @@ status (choices: pending/approved/rejected), created_at
     "email": "...",
     "first_name": "...",
     "last_name": "...",
-    "role": "examiner",
-    "roles": [...],
-    "mfa_enrolled": true,
-    "effective_permissions": ["marking:second_mark", "..."]
+    "status": "active",
+    "roles": [
+      {"name": "examiner", "effective_from": "2026-05-20", "effective_to": null}
+    ],
+    "effective_permissions": ["marking:second_mark", "..."],
+    "metadata": {"department": "Legal"}
   }
 }
 ```
 
-**`effective_permissions`** is computed: look up all active `UserRole` records for the user, collect all `Permission.code` values from their `RolePermission` records.
+**`effective_permissions`** computed from active `UserRole` records → `RolePermission` codenames union.
 
-**Acceptance:** Authenticated user gets their profile and permission list. Permissions reflect current role assignments, not stale JWT claims.
-
----
-
-### TASK-1.2.8 — Bulk user import (§1.2.4, §1.6: POST /api/v1/admin/users/import)
-**File:** `apps/users/views.py`, `apps/users/services.py`
-
-**What it does:**
-1. Accept `multipart/form-data` with `file` (CSV or XLSX)
-2. Parse CSV: columns `first_name, last_name, email, role, effective_date, id_number(optional)`
-3. Validate each row: email format, role valid, required fields present
-4. **Partial success:** commit valid rows individually; collect errors for invalid rows
-5. For each created user: call `send_invite_email(user)`
-6. Compute SHA-256 hash of the uploaded file; write `AuditEvent(action="BULK_IMPORT", new_state={"file_hash": "...", "rows_total": N, "rows_ok": N, "rows_failed": N})`
-7. Store original file in MinIO (or local filesystem in dev — skip MinIO if `MINIO_ENABLED=False`)
-8. Return: `{"success": true, "data": {"created": 195, "failed": 5, "errors": [{"row": 3, "error": "invalid email"}, ...]}}`
-
-**Requires:** `openpyxl` for XLSX parsing (add to `requirements.txt`).
-
-**Acceptance (F000-04):** 200-row import with 5 invalid rows: 195 users created, 5 error rows reported. File hash recorded in audit.
+**Acceptance:** Authenticated user sees their full profile. Permissions reflect current `UserRole` assignments, not stale JWT claims.
 
 ---
 
-### TASK-1.2.9 — WebAuthn MFA enrolment (§1.2.3)
-**File:** `apps/users/views.py`
+### TASK-1.1.9 — Fix `_mirror_profile` auto-create behaviour (GAP-07)
+**File:** `shared/auth.py`
+
+**Problem:** `_mirror_profile()` auto-creates `UserProfile` for ANY valid JWT. Under the IAM-aligned architecture, profiles must be created by Administrators via the admin API. An unknown `sub` should either:
+- **Option A (strict):** Reject with 403 — "NBES profile not provisioned"
+- **Option B (graceful):** Create a minimal profile with `status="active"` but log a warning. This supports edge cases where the IAM has the user but the admin hasn't provisioned them in NBES yet.
+
+**Recommendation:** Option B with a warning log + AuditEvent(`action="AUTO_PROFILE_CREATED"`). Update the auto-created profile to use the JWT claims for `email` and extract `first_name`/`last_name` from the `name` claim if available.
+
+**Also fix:** Update on every authentication to sync `email` and role claims from the JWT, not just on first creation.
+
+**Acceptance:** Unknown `sub` → profile created with warning. Subsequent requests update email/role from JWT claims.
+
+---
+
+### TASK-1.1.10 — Create migrations for Sprint 1.1
+**Command:** `python manage.py makemigrations users && python manage.py migrate`
+
+**Include:**
+- Data migration: migrate existing `UserProfile.role` values to `UserRole` rows
+- Seed migration: ensure all 15 roles exist in `Role` table
+
+**Acceptance:** `python manage.py showmigrations users` shows all green. `UserProfile`, `UserRole`, `RoleChangeEvent` tables created.
+
+---
+
+## Sprint 1.2 — Roles, Permissions & RBAC Gateway (Week 2)
+
+**Goal:** Configurable role/permission matrix, mutual-exclusion rules, two-approver flow for high-privilege roles, step-up MFA enforcement, bulk import.
+
+---
+
+### TASK-1.2.1 — Role assignment and revocation endpoints (§1.6, GAP-03)
+**Files:** `apps/users/views.py`, `apps/users/services.py`
 
 **Endpoints:**
-- `POST /api/v1/auth/mfa/webauthn/register/begin` — returns WebAuthn challenge options JSON
-- `POST /api/v1/auth/mfa/webauthn/register/complete` — verifies attestation, saves credential to MFAEnrolment
-- `POST /api/v1/auth/mfa/webauthn/authenticate/begin` — returns assertion options
-- `POST /api/v1/auth/mfa/webauthn/authenticate/complete` — verifies assertion, issues JWT
+- `POST /api/v1/admin/users/{id}/roles` — body: `{"role": "examiner", "effective_from": "2026-05-20"}`
+- `DELETE /api/v1/admin/users/{id}/roles/{role_name}` — body: `{"reason": "Tenure expired"}`
+- `GET /api/v1/admin/users/{id}/roles` — returns active UserRole records
 
-**Requires:** `py_webauthn` library (add to `requirements.txt`).
+**Permission:** `users:manage`
 
-**Dev note:** WebAuthn requires HTTPS or localhost — works on `http://localhost:8003` in dev.
+**Role assignment logic (`services.py` → `assign_role()`):**
+1. Validate role exists and is active
+2. Check mutual-exclusion rules (TASK-1.2.3)
+3. If high-privilege role → create `RoleAssignmentApproval` (TASK-1.2.4), return pending status
+4. Otherwise → create `UserRole`, create `RoleChangeEvent(change_type="assign")`
+5. Call `keycloak_admin.assign_client_role(user.keycloak_sub, role_name)` to sync to IAM
+6. Write `AuditEvent(action="ROLE_ASSIGNED")`
+7. Publish `RoleChanged` outbox event → downstream systems invalidate cached permissions within 60s
 
-**Acceptance:** User can register a hardware key or platform authenticator (Windows Hello, Touch ID). Authentication with the key completes login and issues JWT.
+**Role revocation logic (`services.py` → `revoke_role()`):**
+1. Set `UserRole.revoked_at = now()`, `revoke_reason = reason`
+2. Create `RoleChangeEvent(change_type="revoke")`
+3. Call `keycloak_admin.remove_client_role(user.keycloak_sub, role_name)` to sync to IAM
+4. Write `AuditEvent(action="ROLE_REVOKED", old_state={"role": ...})`
+5. Publish `RoleChanged` outbox event
+6. Invalidate RBAC cache for the affected role (`shared.rbac.invalidate_role()`)
 
----
-
-### TASK-1.2.10 — IP-level brute-force throttle (§1.2.6)
-**File:** `apps/users/services.py` — function `check_ip_throttle(ip_address) -> bool`
-
-**Rules from §1.2.6:**
-- 100 failed logins from a single IP in any 60-second window → 15-minute IP throttle
-- 1000 failed logins from a single IP in any 24-hour window → 24-hour IP block
-
-**Implementation:**
-1. Use Redis (already in stack) as counter store: `INCR nbes:login_fail:{ip}:60s` with `EXPIRE 60`
-2. 24h counter: `INCR nbes:login_fail:{ip}:86400` with `EXPIRE 86400`
-3. On threshold: store `nbes:throttle:{ip}` with expiry in Redis; check at the start of the login endpoint
-4. On 24h block: write `AuditEvent(action="IP_BLOCKED", new_state={"ip": ip, "duration_hours": 24})`
-5. Send security event to System 22 via outbox (topic: `nbes.security`)
-
-**Acceptance (F000-06):** 100 bad-credential requests from same IP within 1 minute triggers throttle. Next request from that IP gets 429 before password check even runs.
+**Acceptance (F000-02):** Revoking a role publishes `RoleChanged` event; within 60 seconds the user gets 403 on that role's endpoints.
 
 ---
 
-## Sprint 1.3 — Audit Substrate, Security Ops & Integration Patterns (Week 3)
+### TASK-1.2.2 — Seed full permission codename catalog (GAP-34, GAP-36)
+**File:** Migration file in `apps/users/migrations/`
 
-**Goal:** Audit chain exported to System 22, Security Operations console, System 17 integration substrate, role dashboard skeleton endpoints.
+**Full codename catalog (25+ codenames):**
+```python
+PERMISSION_SEED = [
+    # Users & Admin
+    ("users:manage", "Manage user profiles (CRUD)"),
+    ("users:import", "Bulk import users"),
+    ("rbac:manage", "Manage role-permission matrix"),
 
----
+    # Item Bank
+    ("item:create", "Create examination items"),
+    ("item:approve", "Approve/reject items"),
 
-### TASK-1.3.1 — Fix AuditEvent select_for_update (pre-work BUG-05, now in sprint)
-Already covered in pre-work. Confirm it's done before this sprint starts.
+    # Committee
+    ("committee:manage", "Manage NBEC committee operations"),
 
----
+    # Sitting
+    ("sitting:configure", "Configure examination sittings"),
+    ("sitting:invigilate", "Invigilate at examination centres"),
 
-### TASK-1.3.2 — DailyHashAnchor model and daily export job (§1.2.7)
-**Files:** `apps/audit/models.py`, `apps/audit/tasks.py`
+    # Registration
+    ("registration:self", "Self-register as candidate"),
+    ("registration:eligibility:override", "Override eligibility decisions"),
 
-**DailyHashAnchor model:**
+    # Marking
+    ("marking:second_mark", "Second-mark examination scripts"),
+    ("marking:moderate", "Moderate marking decisions"),
+
+    # Results
+    ("results:ratify", "Ratify examination results"),
+    ("results:publish:approve", "Approve results publication"),
+    ("results:view:own", "View own examination results"),
+
+    # Resit
+    ("resit:register", "Register for resit examination"),
+    ("resit:exception:grant", "Grant resit exceptions"),
+
+    # Certificate
+    ("cert:trigger", "Trigger certificate issuance"),
+
+    # Audit & Security
+    ("audit:search", "Search audit trail"),
+    ("audit:verify", "Verify hash chain integrity"),
+    ("audit:export", "Export audit data"),
+    ("secops:view", "View security operations console"),
+
+    # Centre Operations (System 10B)
+    ("centre:manage", "Manage examination centres"),
+    ("centre:invigilate", "Invigilate candidates at centres"),
+    ("centre:checkin", "Check in candidates at centres"),
+    ("proctoring:remote", "Remote proctoring operations"),
+    ("candidate:verify_identity", "Verify candidate identity"),
+
+    # Dashboards & Reporting
+    ("dashboards:manage", "Manage dashboard configuration"),
+    ("sla:view", "View SLA monitoring"),
+    ("reporting:view", "View reports and analytics"),
+
+    # Director General
+    ("dg:overview", "Director-General overview access"),
+
+    # Service Desk
+    ("helpdesk:support", "Service desk support operations"),
+]
 ```
-id, date (DateField unique), head_hash (CharField 64), 
-exported_to_s22_at (DateTimeField null), anchor_ref (CharField blank)
+
+**Role → Permission mapping (seed RolePermission rows):**
+
+| Role | Permissions |
+|------|-------------|
+| `system-administrator` | `users:manage`, `users:import`, `rbac:manage`, `audit:search`, `audit:verify`, `secops:view`, `dashboards:manage` |
+| `nbec-member` | `item:approve`, `sitting:configure`, `results:ratify`, `results:publish:approve`, `committee:manage`, `audit:export`, `resit:exception:grant` |
+| `nbec-secretariat` | `committee:manage`, `sla:view`, `reporting:view` |
+| `item-writer` | `item:create` |
+| `moderator` | `item:approve`, `marking:moderate` |
+| `examiner` | `marking:second_mark` |
+| `candidate` | `registration:self`, `results:view:own`, `resit:register` |
+| `clet-registrar` | `registration:eligibility:override`, `results:publish:approve`, `cert:trigger`, `sla:view` |
+| `invigilator` | `centre:invigilate`, `sitting:invigilate`, `centre:checkin`, `candidate:verify_identity` |
+| `centre-coordinator` | `centre:manage`, `centre:invigilate`, `sitting:invigilate`, `centre:checkin`, `candidate:verify_identity` |
+| `remote-proctor` | `proctoring:remote` |
+| `dti-operations` | `centre:manage`, `secops:view` |
+| `service-desk-agent` | `helpdesk:support` |
+| `auditor` | `audit:search`, `audit:verify`, `audit:export` |
+| `director-general` | `dg:overview`, `audit:search`, `audit:export` |
+
+**Acceptance:** `Permission.objects.count()` ≥ 30. `Role.objects.count()` = 15. Every role has at least 1 permission.
+
+---
+
+### TASK-1.2.3 — Mutual-exclusion rule enforcement (§1.2.2, GAP-09)
+**Files:** `apps/users/models.py`, `apps/users/services.py`
+
+**MutualExclusionRule model:**
+```python
+class MutualExclusionRule(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    role_a = models.ForeignKey(Role, on_delete=models.CASCADE, related_name='exclusion_rules_a')
+    role_b = models.ForeignKey(Role, on_delete=models.CASCADE, related_name='exclusion_rules_b')
+    description = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['role_a', 'role_b'], name='unique_exclusion_pair'),
+        ]
 ```
 
-**Celery Beat task:** `export_daily_audit_anchor` — runs at 01:00 UTC (already in `config/celery.py` framework, add Beat entry).
+**Seed data migration:**
+```python
+EXCLUSION_PAIRS = [
+    ("item-writer", "moderator", "Item Writer and Moderator cannot coexist (conflict of interest)"),
+    ("invigilator", "candidate", "Invigilator and Candidate are always mutually exclusive"),
+    ("system-administrator", "candidate", "Admin roles cannot coexist with Candidate"),
+    ("director-general", "candidate", "DG cannot coexist with Candidate"),
+    ("nbec-member", "candidate", "NBEC Member cannot coexist with Candidate"),
+]
+```
 
-**What the task does:**
-1. Find all `AuditEvent` for `date=yesterday`
-2. Take the last event's `chain_hash` as `head_hash`
-3. If already exported (`DailyHashAnchor` exists with `exported_to_s22_at` set): skip (idempotent)
-4. Sign the anchor payload with `settings.JWT_SECRET_KEY` (HMAC-SHA256)
-5. POST to System 22 stub: `shared/integrations/system22.py` — in dev, just log the call and set `exported_to_s22_at=now()`
-6. Create/update `DailyHashAnchor(date=yesterday, head_hash=..., exported_to_s22_at=now())`
-7. On failure: write to `logs/audit_export_failed.jsonl` local file fallback; retry next run
+**Validation in `services.py` → `check_mutual_exclusion(user, new_role)`:**
+1. Get user's active roles (UserRole where revoked_at is null)
+2. Check all MutualExclusionRule pairs
+3. If conflict found: raise `ValidationError` with code `ROLE_MUTUAL_EXCLUSION`
 
-**Acceptance (§1.2.7):** After running the task, `DailyHashAnchor.objects.filter(date=yesterday).first().exported_to_s22_at` is not None.
+**Called from:** `assign_role()` (TASK-1.2.1), `bulk_assign_roles()` (TASK-1.2.8)
 
----
-
-### TASK-1.3.3 — Audit search endpoint (§1.6: GET /api/v1/audit/search)
-**Files:** `apps/audit/views.py`, `apps/audit/serializers.py`, `apps/audit/urls.py`
-
-**Permission:** `auditor`, `director-general`, `system-administrator` roles only.
-
-**Query parameters:**
-- `actor_id` (UUID)
-- `action` (string, partial match)
-- `entity_type` (string)
-- `entity_id` (UUID)
-- `from_date`, `to_date` (ISO date)
-- `page`, `page_size`
-
-**Endpoint uses `django-filter`** (`AuditEventFilter` in `apps/audit/filters.py`).
-
-**Returns:** Paginated list of audit events in standard envelope. `AuditEvent.record()` calls that include `actor_id` from current request must include `ip_address` and `user_agent` from `request`.
-
-**Write `AuditEvent(action="AUDIT_SEARCH_PERFORMED", new_state={"filters": {...}, "result_count": N})` every time the endpoint is called (meta-audit).
-
-**Acceptance:** Auditor can filter events by date range and actor. Non-auditor gets 403.
+**Acceptance:** Assigning `invigilator` to a `candidate` → 400 with `ROLE_MUTUAL_EXCLUSION`. Assigning `examiner` to an `item-writer` → 400.
 
 ---
 
-### TASK-1.3.4 — Audit chain verification endpoint (§1.6: GET /api/v1/audit/chain/{date})
-**File:** `apps/audit/views.py`
+### TASK-1.2.4 — Two-approver flow for high-privilege roles (§1.2.2, GAP-12)
+**File:** `apps/users/models.py`, `apps/users/views.py`, `apps/users/services.py`
 
-**Permission:** `auditor` only.
+**RoleAssignmentApproval model:**
+```python
+class RoleAssignmentApproval(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(UserProfile, on_delete=models.CASCADE, related_name='pending_approvals')
+    role = models.ForeignKey(Role, on_delete=models.CASCADE)
+    requested_by = models.ForeignKey(UserProfile, on_delete=models.CASCADE,
+        related_name='role_approval_requests')
+    approved_by = models.ForeignKey(UserProfile, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='role_approvals_given')
+    approved_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=10, choices=[
+        ("pending", "Pending"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    ], default="pending")
+    effective_from = models.DateField()
+    reject_reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+```
 
-**What it returns:**
-```json
-{
-  "success": true,
-  "data": {
-    "date": "2026-05-17",
-    "head_hash": "abc123...",
-    "event_count": 147,
-    "exported_to_s22_at": "2026-05-18T01:00:15Z",
-    "anchor_ref": "S22-2026-05-17-...",
-    "chain_valid": true   // server re-computes chain and verifies
-  }
+**High-privilege roles requiring two-approver:** `nbec-member` (Chair), `director-general`, `system-administrator`
+
+**Endpoints:**
+- `GET /api/v1/admin/role-approvals` — List pending approvals (permission: `rbac:manage`)
+- `POST /api/v1/admin/role-approvals/{id}/approve` — Second admin approves
+- `POST /api/v1/admin/role-approvals/{id}/reject` — Reject with reason
+
+**Approval logic:**
+1. `requested_by` and `approved_by` MUST be different users → else 400 `SELF_APPROVAL_NOT_PERMITTED`
+2. On approval: create `UserRole` + `RoleChangeEvent`, sync to IAM, publish `RoleChanged`
+3. On rejection: set status, write `AuditEvent(action="ROLE_ASSIGNMENT_REJECTED")`
+
+**Acceptance:** High-privilege assignment pends until a second (different) administrator approves.
+
+---
+
+### TASK-1.2.5 — Step-up authentication enforcement (§1.2.3, GAP-15, GAP-16, GAP-17)
+**Files:** `shared/permissions.py`, `shared/step_up.py` (new file)
+
+**`shared/step_up.py` — Step-up policy configuration:**
+```python
+"""Step-up policy — declared in code, versioned, testable.
+
+The API Gateway (System 17) adds x-acr or x-mfa-verified headers to requests
+where the IAM has confirmed a recent MFA challenge. NBES checks these headers
+for high-stakes actions.
+"""
+
+STEP_UP_POLICY_VERSION = "1.0"
+
+# Actions requiring step-up MFA verification
+STEP_UP_ACTIONS = {
+    # Admin operations
+    "users:manage",        # Role assignment, user creation
+    "rbac:manage",         # Permission matrix changes
+
+    # High-stakes examination operations
+    "results:publish:approve",    # Results publication
+    "results:ratify",             # Board ratification
+    "resit:exception:grant",      # Resit exceptions
+
+    # Security operations
+    "audit:export",               # Audit data export
+
+    # Certificate operations
+    "cert:trigger",               # Certificate issuance
+
+    # Candidate high-stakes actions (MFA optional for candidates,
+    # but required for these specific actions per §1.2.3)
+    "results:view:own",           # View own results
 }
 ```
 
-**`chain_valid`** is computed by replaying all events for that date in order and recomputing chain hashes. If any hash mismatches, `chain_valid=false`.
-
-**Acceptance:** Returns chain proof for any given date. Tampering with an audit row (direct DB edit) causes `chain_valid=false`.
-
----
-
-### TASK-1.3.5 — Security Operations audit log for auth events (§1.2.6)
-**Files:** `apps/users/views.py` (login endpoint), `shared/auth.py`
-
-**All these events must write an AuditEvent AND publish to outbox topic `nbes.security`:**
-- `AUTH_FAILED` — bad password
-- `AUTH_MFA_FAILED` — bad MFA code
-- `AUTH_SUCCESS` — successful login
-- `AUTH_TOKEN_EXPIRED` — expired JWT presented
-- `AUTH_ROLE_MISMATCH` — valid JWT but role insufficient (403)
-- `AUTH_IP_THROTTLED` — IP throttle triggered
-- `AUTH_IP_BLOCKED` — IP blocked for 24h
-- `ACCOUNT_LOCKED` — account locked after 5 failures
-- `ACCOUNT_AUTO_UNLOCKED` — account auto-unlocked after cooldown
-
-**Each event must include:** `actor_id` (null if unauthenticated), `ip_address`, `user_agent`, `action`, `new_state` with relevant context.
-
-**Acceptance (§1.2.6):** Every failed login produces an `AUTH_FAILED` audit entry. Security events appear in `GET /api/v1/audit/search?action=AUTH_FAILED`.
-
----
-
-### TASK-1.3.6 — System 17 integration substrate (§1.2.8)
-**File:** `shared/integrations/system17.py` (create this file)
-
-**What it is:** A reusable client for all inter-system HTTP calls. Every later phase uses this — do not let phases implement their own HTTP calls.
-
-**Implements:**
+**`RequiresStepUp` DRF permission class:**
 ```python
-class System17Client:
-    def post(self, path: str, payload: dict, idempotency_key: str) -> dict:
-        """
-        Signs payload with HMAC-SHA256 using SYSTEM_17_API_KEY.
-        Adds headers: X-Nonce, X-Timestamp, X-Signature, X-Idempotency-Key.
-        Replay protection: nonce = uuid4(), timestamp = now ISO.
-        Retries 3 times with exponential backoff on 5xx.
-        Returns response JSON or raises IntegrationError.
-        """
+class RequiresStepUp(BasePermission):
+    """Checks x-acr or x-mfa-verified header from the API Gateway.
+
+    Returns 403 with error code STEP_UP_REQUIRED if missing.
+    Records SecurityEvent on failure.
+    """
+    def has_permission(self, request, view):
+        acr = request.META.get("HTTP_X_ACR", "")
+        mfa_verified = request.META.get("HTTP_X_MFA_VERIFIED", "")
+        if acr or mfa_verified:
+            return True
+        # Record denial
+        record_security_event(
+            category="step_up_required",
+            severity="warning",
+            ip_address=getattr(request, "ip_address", None),
+            actor_id=request.auth.get("sub") if request.auth else None,
+            indicators={"path": request.path, "method": request.method},
+        )
+        return False
 ```
 
-**Signature scheme:** `HMAC-SHA256(key=SYSTEM_17_API_KEY, msg=f"{nonce}:{timestamp}:{json.dumps(payload, sort_keys=True)}")`
-
-**In dev** (`SYSTEM_17_URL` not configured): log the call and return `{"status": "stub_ok"}`.
-
-**Acceptance:** Calling `System17Client().post("/api/v1/test", {"x": 1}, "key-123")` in dev logs the call with correct signature headers.
-
----
-
-### TASK-1.3.7 — System 22 integration stub (§1.2.8)
-**File:** `shared/integrations/system22.py` (create this file)
-
-**What it is:** Client for forwarding audit anchors and security events to System 22 (SIEM/tamper-evident store).
-
+**Integration with `has_permission()` factory:**
 ```python
-class System22Client:
-    def export_audit_anchor(self, date: str, head_hash: str, event_count: int) -> str:
-        """Returns anchor_ref string. In dev: logs and returns stub ref."""
-    
-    def send_security_event(self, event_type: str, payload: dict) -> None:
-        """Forwards security events (auth failures, blocks, anomalies). In dev: logs only."""
+def has_permission(codename):
+    """Enhanced factory that auto-adds step-up requirement for high-stakes actions."""
+    class Perm(HasPermission):
+        permission = codename
+    if codename in STEP_UP_ACTIONS:
+        return [Perm, RequiresStepUp]
+    return Perm
 ```
 
-**Acceptance:** `export_daily_audit_anchor` task calls `System22Client().export_audit_anchor(...)` without raising. Dev logs confirm the call was made.
+**Acceptance (F000-03):** Internal user attempts high-stakes action without `x-acr` header → 403 with `STEP_UP_REQUIRED`. With header → passes through to normal RBAC check.
 
 ---
 
-### TASK-1.3.8 — Role Dashboard Skeleton endpoints (§1.2.9)
-**File:** `apps/users/views.py` — `GET /api/v1/dashboard`
+### TASK-1.2.6 — Update RBAC resolver to use UserRole table (GAP-02)
+**File:** `shared/rbac.py`
 
-**What it returns:** An empty-state dashboard payload for the user's role, structured so the frontend can render panels.
+**Current:** Resolves permissions by intersecting JWT `resource_access` roles with `Role` → `RolePermission`.
 
+**Change:** Also check the `UserRole` table as the authoritative source:
+1. Extract `sub` from JWT payload
+2. Look up `UserRole.objects.filter(user__keycloak_sub=sub, revoked_at__isnull=True, effective_from__lte=today)`
+3. If `effective_to` is set and `effective_to < today`, skip that role
+4. Union permissions from both JWT claims AND `UserRole` → `RolePermission`
+5. Cache result per user (not just per role) with 60s TTL
+
+**Why both:** JWT roles may be stale (up to 8h token lifetime). `UserRole` is the source of truth for NBES-local decisions. Using both provides defence in depth: the JWT gives fast-path verification, `UserRole` is the authoritative fallback.
+
+**Acceptance:** Revoking a `UserRole` causes 403 within 60 seconds (cache TTL), even if the JWT still carries the role.
+
+---
+
+### TASK-1.2.7 — Bulk user import endpoint (§1.2.4, GAP-18, GAP-19)
+**Files:** `apps/users/views.py`, `apps/users/services.py`, `apps/users/serializers.py`
+
+**Endpoint:** `POST /api/v1/admin/users/import`
+**Permission:** `users:import`
+**Content-Type:** `multipart/form-data`
+
+**Service logic (`services.py` → `bulk_import_users()`):**
+1. Accept CSV or XLSX file (add `openpyxl` to `requirements.txt`)
+2. Parse with schema validation: columns `first_name, last_name, email, role, effective_date, national_id(optional)`
+3. Validate each row: email format, email uniqueness, role exists, required fields present
+4. **Partial success:** Process valid rows individually; collect errors for invalid rows
+5. For each valid row: call `create_user()` service (TASK-1.1.5) which provisions in IAM
+6. Compute SHA-256 hash of the uploaded file
+7. Store original file (MinIO in prod, local filesystem in dev)
+8. Create `BulkImportRecord` model:
+   ```python
+   class BulkImportRecord(models.Model):
+       id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+       file_hash = models.CharField(max_length=64)
+       file_ref = models.CharField(max_length=500, help_text="Object storage path")
+       total_rows = models.PositiveIntegerField()
+       success_count = models.PositiveIntegerField()
+       error_count = models.PositiveIntegerField()
+       error_report = models.JSONField(default=list)
+       imported_by = models.ForeignKey(UserProfile, on_delete=models.SET_NULL, null=True)
+       created_at = models.DateTimeField(auto_now_add=True)
+   ```
+9. Write `AuditEvent(action="BULK_IMPORT", new_state={"file_hash": ..., "total": N, "ok": N, "failed": N})`
+
+**Response:**
 ```json
 {
   "success": true,
   "data": {
-    "role": "nbec-member",
-    "panels": [
-      {"id": "meeting_agenda", "title": "Meeting Agenda", "data": null, "status": "not_implemented"},
-      {"id": "pending_approvals", "title": "Pending Approvals", "data": null, "status": "not_implemented"},
-      {"id": "conflict_declarations", "title": "Conflict Declarations", "data": null, "status": "not_implemented"},
-      {"id": "audit_trail", "title": "Audit Trail", "data": null, "status": "not_implemented"}
+    "import_id": "...",
+    "created": 195,
+    "failed": 5,
+    "errors": [
+      {"row": 3, "field": "email", "error": "Invalid email format"},
+      {"row": 7, "field": "email", "error": "Email already exists"}
     ]
   }
 }
 ```
 
-**Panel map per role** (from §1.2.9):
-- `nbec-member`: meeting_agenda, pending_approvals, conflict_declarations, audit_trail_viewer
-- `nbec-secretariat`: committee_operations, candidate_registration_desk, exception_queue
-- `item-writer`: my_items, drafts, peer_review_feedback
-- `moderator`: review_queue, panel_decisions, item_search
-- `examiner`: marking_queue, borderline_review_queue
-- `candidate`: registration, payment, slip, results, remarking
-- `clet-registrar`: override_queue, ratification_dashboard, cert_trigger_panel
-- `invigilator`: centre_operations, candidate_checkin, proctoring_queue
-- `centre-coordinator`: centre_operations, candidate_checkin, proctoring_queue
-- `system-administrator`: users, roles, integrations, audit, system_health
-- `auditor`: audit_trail_search, hash_chain_verifier, export
-
-**Acceptance:** `GET /api/v1/dashboard` returns correct panel list for each role. Unknown role returns empty panels.
+**Acceptance (F000-04):** 200-row import with 5 invalid rows → 195 users created, 5 error rows reported. File hash in audit.
 
 ---
 
-### TASK-1.3.9 — Ensure all 403 events are audit-logged (§1.2.5)
-**File:** `shared/permissions.py` — `HasPermission.has_permission()`
+### TASK-1.2.8 — Bulk role assignment endpoint (GAP-20)
+**Files:** `apps/users/views.py`, `apps/users/services.py`
 
-**Uncomment and implement the TODO block (lines 68-74):**
-```python
-if not granted:
-    from apps.audit.models import AuditEvent
-    AuditEvent.record(
-        actor_id=request.auth.get("sub") if request.auth else None,
-        action="AUTHZ_DENIED",
-        entity_type="api_endpoint",
-        new_state={
-            "permission_required": self.permission,
-            "role_presented": role,
-            "path": request.path,
-            "method": request.method,
-        },
-        ip_address=getattr(request, "ip_address", None),
-        user_agent=getattr(request, "user_agent", ""),
-    )
+**Endpoint:** `POST /api/v1/admin/users/bulk-assign-roles`
+**Permission:** `users:manage`
+
+**Request body:**
+```json
+{
+  "role": "invigilator",
+  "user_ids": ["uuid1", "uuid2", "uuid3"],
+  "effective_from": "2026-06-01"
+}
 ```
 
-**Acceptance (F000-05):** Item Writer calls `POST /api/v1/admin/users` → receives 403. Audit search shows `AUTHZ_DENIED` entry with actor and path.
+**Logic:**
+1. Validate all user_ids exist
+2. Check mutual-exclusion for each user
+3. Assign role to each valid user; collect errors for invalid
+4. Partial success same pattern as bulk import
+
+**Acceptance:** Bulk-assign 50 invigilators in one call. Users with conflicting roles reported as errors.
 
 ---
 
-### TASK-1.3.10 — Update UserProfile.role on every authenticated request
-**File:** `shared/auth.py` — `KeycloakJWTAuthentication.authenticate()`
+### TASK-1.2.9 — Add `user_agent` to 403 audit logs (GAP-23)
+**File:** `shared/permissions.py`
 
-**Problem:** `get_or_create` only sets `role` on first creation. If the role changes in Keycloak or via the admin, the stale role is used.
-
-**Fix:** Change `get_or_create` to update `role` and `email` on every request:
+**Change:** In the `_record_denial()` function, add `user_agent` to indicators:
 ```python
-user, created = UserProfile.objects.get_or_create(
-    keycloak_sub=payload["sub"],
-    defaults={"email": payload.get("email", ""), "role": payload.get("role", "")},
-)
-if not created:
-    UserProfile.objects.filter(pk=user.pk).update(
-        email=payload.get("email", user.email),
-        role=payload.get("role", user.role),
-    )
-    user.refresh_from_db()
+indicators={
+    "path": request.path,
+    "method": request.method,
+    "roles": roles,
+    "permission": self.permission,
+    "user_agent": getattr(request, "user_agent", ""),  # <-- ADD
+},
 ```
 
-**Acceptance:** Changing a user's role in the JWT payload and re-authenticating immediately reflects the new role.
+**Acceptance:** 403 audit entries include `user_agent` in indicators.
 
 ---
 
-### TASK-1.3.11 — Write migrations for all new models
-After TASK-1.3.8, run `python manage.py makemigrations` to capture all new models from this sprint (DailyHashAnchor, Role, Permission, RolePermission, UserRole, RoleAssignmentApproval, MFAEnrolment, LoginAttempt, Session, PasswordHistory).
+### TASK-1.2.10 — Create migrations for Sprint 1.2
+**Command:** `python manage.py makemigrations users && python manage.py migrate`
+
+**Include:**
+- `MutualExclusionRule` table + seed data
+- `RoleAssignmentApproval` table
+- `BulkImportRecord` table
+- Permission + Role seed updates (full 30+ codenames, 15 roles)
+- RolePermission seed (full matrix)
 
 ---
 
-## Sprint 1 Acceptance Criteria Summary (from §1.11)
+## Sprint 1.3 — Integration Polish, Dashboards & Hardening (Week 3)
 
-| # | Given/When/Then | SRS Ref |
-|---|---|---|
-| 1 | Admin creates Examiner account → account exists + invite email within 5 min | F000-01 |
-| 2 | Internal user attempts high-stakes action without MFA → gated until MFA satisfied | F000-03 |
-| 3 | Role revoked → user loses access within 60 seconds | F000-02 |
-| 4 | Item Writer calls results-publish API → HTTP 403 + audit entry | F000-05 |
-| 5 | 100 bad logins from single IP → IP throttled 15 min + security event in System 22 | F000-06 |
-| 6 | 200-row import with 5 invalid rows → 195 created + row-level error report | F000-04 |
-| 7 | Daily hash-anchor job runs → independent verification with public key succeeds | §1.2.7 |
+**Goal:** Consolidate duplicate implementations, add missing dashboard panels, harden integration patterns, verify audit integrity.
 
 ---
 
-## Sprint 1 Demo Script (§1.12)
+### TASK-1.3.1 — Consolidate duplicate System 17 clients (GAP-28)
+**Files:** `shared/integrations.py`, `shared/integrations/system17.py`
 
-1. Admin logs in (MFA TOTP prompt) → creates an NBEC Member account
-2. NBEC Member receives invite email, sets password (HaveIBeenPwned check enforced), registers WebAuthn
-3. Admin bulk-imports 50-row Invigilator cohort; 48 succeed, 2 reported with row-level errors
-4. Admin attempts to assign Item Writer + Moderator to same user; blocked
-5. Item Writer logs in, calls results-publish API → HTTP 403; audit entry appears in Auditor search within seconds
-6. Simulate 100 bad-credential attempts from single IP; throttle engages; Security Operations Console shows event; System 22 stub receives alert
-7. Auditor views yesterday's audit chain, exports proof, verifies hash externally
+**Action:** Deprecate the older class-based `System17Client` in `shared/integrations/system17.py`. The canonical implementation is the function-based `call_system_17()` in `shared/integrations.py`.
+
+**Steps:**
+1. Add a deprecation warning to `System17Client.__init__()`:
+   ```python
+   import warnings
+   warnings.warn("System17Client is deprecated. Use shared.integrations.call_system_17() instead.", DeprecationWarning)
+   ```
+2. Search codebase for all usages of `System17Client` and migrate to `call_system_17()`
+3. Update the smoke test command to use `call_system_17()`
+4. Mark the file with `# DEPRECATED — will be removed in Phase 2`
+
+**Acceptance:** `grep -r "System17Client" --include="*.py" .` shows only the deprecated class itself and the deprecation warning.
+
+---
+
+### TASK-1.3.2 — Consolidate duplicate dashboard implementations (GAP-32)
+**Files:** `apps/users/views.py`, `apps/dashboards/views.py`
+
+**Action:** The `apps/dashboards/` app (DB-driven `DashboardPanel` model) is the canonical implementation. Remove the hardcoded `_DASHBOARD_PANELS` dict from `apps/users/views.py`.
+
+**Steps:**
+1. Ensure all panels from `_DASHBOARD_PANELS` exist in the `DashboardPanel` seed data
+2. Update `GET /api/v1/me/dashboard` to delegate to `apps/dashboards/` views
+3. Remove the `_DASHBOARD_PANELS` dict and `DashboardView` from users views
+4. Support multi-role panel aggregation: show panels for ALL active roles, not just the first JWT role
+
+**Acceptance:** `GET /api/v1/me/dashboard` returns panels for all user's active roles. No hardcoded panels remain.
+
+---
+
+### TASK-1.3.3 — Add missing 10B role dashboard panels (GAP-13, GAP-33)
+**File:** Migration in `apps/dashboards/migrations/`
+
+**Add dashboard panels for missing roles:**
+
+| Role | Panels |
+|------|--------|
+| `remote-proctor` | proctoring_queue, ai_flagged_events, session_monitoring |
+| `dti-operations` | infrastructure_status, power_backup_status, network_resilience, centre_readiness |
+| `service-desk-agent` | support_queue, candidate_lookup, issue_tracker |
+| `director-general` | dg_overview, examination_summary, audit_trail_viewer, compliance_dashboard |
+
+**Acceptance:** `DashboardPanel.objects.filter(role_codename="remote-proctor").count()` ≥ 3. All 15 roles have dashboard panels.
+
+---
+
+### TASK-1.3.4 — Verify append-only DB trigger for AuditEvent (GAP-25)
+**Command:** `python manage.py sqlmigrate audit 0003`
+
+**Verify:** The migration output contains PL/pgSQL `CREATE FUNCTION` + `CREATE TRIGGER` that prevents UPDATE/DELETE on `audit_auditevent`.
+
+**If missing:** Create a new migration:
+```python
+from django.db import migrations
+
+class Migration(migrations.Migration):
+    dependencies = [("audit", "0006_alter_auditevent_entity_id")]
+
+    operations = [
+        migrations.RunSQL(
+            sql="""
+            CREATE OR REPLACE FUNCTION prevent_audit_mutation()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                RAISE EXCEPTION 'AuditEvent rows are immutable — UPDATE/DELETE is prohibited';
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS no_audit_mutation ON audit_auditevent;
+            CREATE TRIGGER no_audit_mutation
+                BEFORE UPDATE OR DELETE ON audit_auditevent
+                FOR EACH ROW
+                EXECUTE FUNCTION prevent_audit_mutation();
+            """,
+            reverse_sql="""
+            DROP TRIGGER IF EXISTS no_audit_mutation ON audit_auditevent;
+            DROP FUNCTION IF EXISTS prevent_audit_mutation();
+            """,
+        ),
+    ]
+```
+
+**Acceptance:** `UPDATE audit_auditevent SET action='test' WHERE id=1;` in psql raises an exception.
+
+---
+
+### TASK-1.3.5 — Fix request_id → correlation_id threading (GAP-29 partial)
+**Files:** `shared/middleware.py`, `shared/events.py`
+
+**Problem:** `request.request_id` from `AuditMiddleware` is NOT threaded through to `publish()` as the outbox `correlation_id`. Each outbox event gets a fresh UUID, breaking end-to-end tracing.
+
+**Fix:** Thread `request_id` through the request context:
+1. Add `request_id` to thread-local storage in `AuditMiddleware`
+2. In `publish()`, default `correlation_id` to the thread-local `request_id` if available
+3. In `AuditEvent.record()`, default `request_id` to the thread-local value
+
+**Acceptance:** An API request that triggers both an `AuditEvent` and an `OutboxEvent` uses the same UUID as both `request_id` and `correlation_id`.
+
+---
+
+### TASK-1.3.6 — Per-user 403 rate detection (GAP-24)
+**File:** `shared/permissions.py` or `shared/middleware.py`
+
+**Add user-level denial tracking alongside IP-level:**
+1. On each 403, increment Redis counter `nbes:denied:user:{sub}:15m` with 15-min TTL
+2. If count exceeds 50 in 15 minutes → emit `SecurityEvent(category="user_excessive_denials")`
+3. Do NOT block the user (unlike IP throttling) — just alert
+
+**Acceptance:** A user generating 50+ 403s in 15 minutes triggers a SecurityEvent visible in the SecOps console.
+
+---
+
+### TASK-1.3.7 — Enforce `old_state` capture in state-change audit events (GAP-27)
+**File:** `apps/audit/models.py`
+
+**Change:** Add a validation warning when `AuditEvent.record()` is called with a state-change action but no `old_state`:
+```python
+STATE_CHANGE_ACTIONS = {"USER_CREATED", "USER_UPDATED", "ROLE_ASSIGNED", "ROLE_REVOKED",
+    "ROLE_PERMISSIONS_UPDATED", ...}
+
+@classmethod
+def record(cls, *, action, **kwargs):
+    if action in cls.STATE_CHANGE_ACTIONS and not kwargs.get("old_state"):
+        import warnings
+        warnings.warn(f"AuditEvent '{action}' should include old_state for compliance")
+    ...
+```
+
+**Acceptance:** Missing `old_state` on state-change actions produces a warning in dev logs.
+
+---
+
+### TASK-1.3.8 — Wire notification bridge for profile provisioning (GAP-31)
+**File:** `apps/notifications/services.py`
+
+**Implement:** `send_provisioning_notification(user: UserProfile)` that:
+1. Looks up `NotificationTemplate` for event `USER_PROVISIONED`
+2. Creates a `Notification` record with `status="queued"`
+3. In prod: calls System 21 API to send email "Your NBES profile is ready"
+4. In dev: logs the notification
+
+**Called from:** `create_user()` service after successful IAM provisioning + local profile creation.
+
+**Acceptance:** Creating a user logs a notification in dev. `Notification.objects.filter(event_name="USER_PROVISIONED").count()` matches created users.
+
+---
+
+### TASK-1.3.9 — Machine-token authentication path (GAP-22)
+**File:** `shared/auth.py`
+
+**Add service-account token detection to `KeycloakJWTAuthentication`:**
+1. Check if JWT contains `azp` (authorized party) claim typical of client_credentials grant
+2. Check if `sub` == `azp` (service accounts have sub == client_id in Keycloak)
+3. If service account: resolve permissions from a service-specific permission set, not from `UserRole`
+4. Create a `ServicePrincipal` (or use existing `UserProfile` with a `is_service_account` flag)
+
+**Acceptance:** A machine token from another system (e.g., System 17 calling NBES) is authenticated and authorized through the same RBAC pipeline.
+
+---
+
+### TASK-1.3.10 — Register new URL routes
+**File:** `config/urls.py`, `apps/users/urls.py`
+
+**Add routes:**
+```python
+# apps/users/urls.py — new admin user endpoints
+admin_user_urlpatterns = [
+    path("", UserListCreateView.as_view(), name="user-list-create"),
+    path("<uuid:pk>/", UserDetailView.as_view(), name="user-detail"),
+    path("<uuid:pk>/roles/", UserRoleListCreateView.as_view(), name="user-roles"),
+    path("<uuid:pk>/roles/<str:role_name>/", UserRoleRevokeView.as_view(), name="user-role-revoke"),
+    path("import/", BulkImportView.as_view(), name="bulk-import"),
+    path("bulk-assign-roles/", BulkAssignRolesView.as_view(), name="bulk-assign-roles"),
+]
+
+role_approval_urlpatterns = [
+    path("", RoleApprovalListView.as_view(), name="approval-list"),
+    path("<uuid:pk>/approve/", RoleApprovalApproveView.as_view(), name="approval-approve"),
+    path("<uuid:pk>/reject/", RoleApprovalRejectView.as_view(), name="approval-reject"),
+]
+
+me_urlpatterns = [
+    path("", CurrentUserView.as_view(), name="me"),              # GET /api/v1/me
+    path("permissions/", PermissionView.as_view(), name="me-permissions"),
+    path("dashboard/", DashboardView.as_view(), name="me-dashboard"),
+]
+
+# config/urls.py — add
+path("api/v1/admin/users/", include((admin_user_urlpatterns, "admin-users"))),
+path("api/v1/admin/role-approvals/", include((role_approval_urlpatterns, "role-approvals"))),
+```
+
+**Acceptance:** All new endpoints are accessible. `GET /api/docs/` shows them in Swagger.
+
+---
+
+## Sprint 1 Acceptance Criteria Summary (from §1.10)
+
+| # | Given/When/Then | SRS Ref | Task |
+|---|---|---|---|
+| 1 | Admin creates Examiner account → account exists + invite email within 5 min | F000-01 | TASK-1.1.5 |
+| 2 | Role revoked → user loses access within 60 seconds | F000-02 | TASK-1.2.1 |
+| 3 | Internal user attempts high-stakes action without MFA → gated until MFA satisfied | F000-03 | TASK-1.2.5 |
+| 4 | 200-row import with 5 invalid rows → 195 created + row-level error report | F000-04 | TASK-1.2.7 |
+| 5 | Item Writer calls results-publish API → HTTP 403 + AUTHZ_DENIED audit entry | F000-05 | (existing) |
+| 6 | 100 bad logins from single IP → IP throttled 15 min + security event in System 22 | F000-06 | (existing) |
+| 7 | Daily hash-anchor job runs → independent verification succeeds | F000-07 | (existing) |
+
+**Note:** F000-05, F000-06, and F000-07 are already implemented in the existing codebase:
+- F000-05: `shared/permissions.py` HasPermission + AUTHZ_DENIED audit logging
+- F000-06: `shared/middleware.py` EdgeRateLimitMiddleware
+- F000-07: `apps/audit/tasks.py` daily_hash_anchor
+
+---
+
+## Sprint 1 Demo Script (IAM-Aligned, §1.13)
+
+1. Administrator authenticates via IAM (Keycloak login page → MFA → JWT) and calls `POST /api/v1/admin/users` to create an NBEC Member account.
+2. IAM sends invite email to the new member. Member clicks link, sets password in IAM, registers MFA in IAM.
+3. Administrator calls `POST /api/v1/admin/users/import` with a 50-row Invigilator CSV; 48 succeed, 2 reported with row-level errors.
+4. Administrator attempts `POST /api/v1/admin/users/{id}/roles` with both `item-writer` and `moderator` for the same user; second assignment blocked with `ROLE_MUTUAL_EXCLUSION`.
+5. Item Writer authenticates via IAM, calls results-publish API → HTTP 403; audit entry appears in `GET /api/v1/audit/search` within seconds.
+6. 100 bad-credential attempts from single IP trigger `EdgeRateLimitMiddleware`; Security Operations Console (`GET /api/v1/secops/auth-failures`) shows the event; System 22 stub receives alert via outbox.
+7. Auditor calls `GET /api/v1/audit/chain/{yesterday}` to view the hash chain proof, exports via `GET /api/v1/audit/export`, verifies hash externally.

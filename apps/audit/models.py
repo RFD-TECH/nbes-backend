@@ -1,9 +1,21 @@
-"""apps/audit/models.py — Append-only audit trail with SHA-256 chain hash."""
+"""Append-only audit trail with SHA-256 chain hash."""
+
+import logging
 import uuid
 import hashlib
 import json
 from django.db import models, transaction
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
+
+# Actions that mutate existing state — callers must supply old_state.
+_STATE_CHANGE_ACTIONS = frozenset({
+    "USER_UPDATED", "USER_DEACTIVATED", "ROLE_ASSIGNED", "ROLE_REVOKED",
+    "ROLE_PERMISSIONS_UPDATED", "ROLE_ASSIGNMENT_APPROVED",
+    "ROLE_ASSIGNMENT_REJECTED", "DASHBOARD_PANEL_UPDATED",
+    "BULK_IMPORT", "PROFILE_UPDATED",
+})
 
 
 class AuditEvent(models.Model):
@@ -12,11 +24,17 @@ class AuditEvent(models.Model):
     DB trigger (added via migration RunSQL) prevents UPDATE/DELETE.
     chain_hash: SHA-256(previous_chain_hash + this_event_payload) — tamper evidence.
     All records forwarded to System 22 via Kafka (OutboxEvent).
+
+    CRITICAL COMPLIANCE NOTICE: DO NOT DELETE or truncate this table.
+    15-year statutory retention lifecycle plan (ADR-002) is required.
     """
+
     id = models.BigAutoField(primary_key=True)
-    event_id = models.UUIDField(unique=True, default=uuid.uuid4)
-    actor_id = models.UUIDField(null=True, blank=True)   # Keycloak sub; NULL for system events
-    action = models.CharField(max_length=100)             # e.g. ITEM_APPROVED, VAULT_READ
+    event_id = models.UUIDField(db_index=True, default=uuid.uuid4)
+    actor_id = models.UUIDField(
+        null=True, blank=True
+    )  # Keycloak sub; NULL for system events
+    action = models.CharField(max_length=100)  # e.g. ITEM_APPROVED, VAULT_READ
     entity_type = models.CharField(max_length=100, blank=True, default="")
     # Accepts any entity primary key — UUID (most apps), short-string PK
     # (Sitting.ref BAR-YYYY-MM, candidate index BAR-YYYY-CCCCC), or null
@@ -55,29 +73,38 @@ class AuditEvent(models.Model):
                 request_id=getattr(request, "request_id", None),
             )
         """
+        if action in _STATE_CHANGE_ACTIONS and kwargs.get("old_state") is None:
+            raise ValueError(
+                f"audit.missing_old_state action={action} — callers must supply old_state "
+                "for state-change actions (blueprint §1.2.7)"
+            )
         with transaction.atomic():
             return cls._record_atomic(action=action, **kwargs)
 
     @classmethod
     def _record_atomic(cls, *, action: str, **kwargs) -> "AuditEvent":
-        last = cls.objects.select_for_update().order_by("-id").values("chain_hash").first()
+        last = (
+            cls.objects.select_for_update().order_by("-id").values("chain_hash").first()
+        )
         previous_hash = last["chain_hash"] if last else "0" * 64
 
         event_id = kwargs.pop("event_id", uuid.uuid4())
         created_at = kwargs.pop("created_at", timezone.now())
-        payload = json.dumps({
-            "event_id": str(event_id),
-            "actor_id": str(kwargs.get("actor_id", "")),
-            "action": action,
-            "entity_type": kwargs.get("entity_type", ""),
-            "entity_id": str(kwargs.get("entity_id", "")),
-            "new_state": kwargs.get("new_state", {}),
-            "created_at": created_at.isoformat(),
-        }, sort_keys=True)
+        payload = json.dumps(
+            {
+                "event_id": str(event_id),
+                "actor_id": str(kwargs.get("actor_id", "")),
+                "action": action,
+                "entity_type": kwargs.get("entity_type", ""),
+                "entity_id": str(kwargs.get("entity_id", "")),
+                "old_state": kwargs.get("old_state", {}),
+                "new_state": kwargs.get("new_state", {}),
+                "created_at": created_at.isoformat(),
+            },
+            sort_keys=True,
+        )
 
-        chain_hash = hashlib.sha256(
-            f"{previous_hash}{payload}".encode()
-        ).hexdigest()
+        chain_hash = hashlib.sha256(f"{previous_hash}{payload}".encode()).hexdigest()
 
         event = cls.objects.create(
             event_id=event_id,
@@ -89,10 +116,15 @@ class AuditEvent(models.Model):
 
         # Forward to System 22 via outbox
         from shared.events import publish
-        publish("AuditEventRecorded", {
-            "event_id": str(event.event_id),
-            "chain_hash": chain_hash,
-        }, topic="nbes.audit")
+
+        publish(
+            "AuditEventRecorded",
+            {
+                "event_id": str(event.event_id),
+                "chain_hash": chain_hash,
+            },
+            topic="nbes.audit",
+        )
 
         return event
 
@@ -103,8 +135,12 @@ class OutboxEvent(models.Model):
     Written in same DB transaction as the domain state change.
     Polled every 5 seconds by apps.audit.tasks.poll_outbox Celery task.
     """
+
     id = models.BigAutoField(primary_key=True)
     correlation_id = models.UUIDField(unique=True, default=uuid.uuid4)
+    request_id = models.UUIDField(null=True, blank=True, db_index=True)
+    traceparent = models.CharField(max_length=255, null=True, blank=True)
+    tracestate = models.TextField(null=True, blank=True)
     topic = models.CharField(max_length=100)
     event_name = models.CharField(max_length=100)
     payload = models.JSONField()
@@ -138,25 +174,28 @@ class SecurityEvent(models.Model):
     """
 
     CATEGORY_CHOICES = [
-        ("auth_token_invalid",     "auth_token_invalid"),
-        ("auth_token_expired",     "auth_token_expired"),
+        ("auth_token_invalid", "auth_token_invalid"),
+        ("auth_token_expired", "auth_token_expired"),
         ("auth_audience_mismatch", "auth_audience_mismatch"),
-        ("authz_denied",           "authz_denied"),
-        ("throttle_applied",       "throttle_applied"),
-        ("ip_blocked",             "ip_blocked"),
-        ("anomaly_detected",       "anomaly_detected"),
+        ("authz_denied", "authz_denied"),
+        ("step_up_denied", "step_up_denied"),
+        ("throttle_applied", "throttle_applied"),
+        ("ip_blocked", "ip_blocked"),
+        ("anomaly_detected", "anomaly_detected"),
     ]
 
     SEVERITY_CHOICES = [
-        ("info",    "info"),
+        ("info", "info"),
         ("warning", "warning"),
-        ("high",    "high"),
+        ("high", "high"),
     ]
 
     id = models.BigAutoField(primary_key=True)
     event_id = models.UUIDField(unique=True, default=uuid.uuid4)
     category = models.CharField(max_length=40, choices=CATEGORY_CHOICES, db_index=True)
-    severity = models.CharField(max_length=10, choices=SEVERITY_CHOICES, default="warning")
+    severity = models.CharField(
+        max_length=10, choices=SEVERITY_CHOICES, default="warning"
+    )
     indicators = models.JSONField(
         default=dict,
         help_text="Free-form details: path, method, role names, reason, etc.",
@@ -176,7 +215,9 @@ class SecurityEvent(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.category}@{self.ip_address or '-'} {self.occurred_at.isoformat()}"
+        return (
+            f"{self.category}@{self.ip_address or '-'} {self.occurred_at.isoformat()}"
+        )
 
 
 class DailyHashAnchor(models.Model):
@@ -194,9 +235,11 @@ class DailyHashAnchor(models.Model):
     §1.6 ("Daily hash anchor must be exported to System 22 by 01:00 UTC;
     failure pages the on-call.").
     """
+
     date = models.DateField(unique=True, db_index=True)
     head_event_id = models.UUIDField(
-        null=True, blank=True,
+        null=True,
+        blank=True,
         help_text="event_id of the last AuditEvent on this UTC day.",
     )
     head_hash = models.CharField(
@@ -209,7 +252,9 @@ class DailyHashAnchor(models.Model):
     )
     exported_to_s22_at = models.DateTimeField(null=True, blank=True)
     anchor_ref = models.CharField(
-        max_length=255, blank=True, default="",
+        max_length=255,
+        blank=True,
+        default="",
         help_text="Receipt id returned by System 22 once notarisation completes.",
     )
     created_at = models.DateTimeField(default=timezone.now)

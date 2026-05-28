@@ -1,51 +1,164 @@
 {
 	"info": {
 		"_postman_id": "b1f9d3aa-7a8b-4c41-9c45-7b6cfaba0001",
-		"name": "NBES — RBAC + Sprint 1.3 (Audit / SecOps / Dashboards)",
-		"description": "End-to-end test suite for the NBES backend.\n\n## Scope\n\n- **Sprint 1.2** — Roles, Permissions & RBAC Gateway (folders 1–4)\n- **Sprint 1.3** — Audit hardening, Security Operations Console, Role Dashboard Skeletons, System 17 idempotency (folders 5–8)\n\n## Two ways to get tokens\n\n### A. Through IAM + Keycloak (recommended — exercises the production token path)\n\n1. Boot IAM:\n   ```bash\n   cd iam && docker compose up -d keycloak postgres\n   python manage.py migrate\n   python manage.py seed_superadmins\n   python manage.py seed_systems\n   python manage.py provision_keycloak_clients\n   python manage.py seed_system_roles\n   ```\n2. Boot NBES with `KEYCLOAK_ENABLED=True` pointing at the local Keycloak:\n   ```bash\n   cd ../nbes-backend\n   docker compose up -d db redis web\n   docker compose exec web python manage.py migrate\n   ```\n3. Run **folder `0 · Setup`** in this collection. The first request (`Keycloak token (super_admin)`) does a Keycloak resource-owner-password-grant against the `clet-iam-internal` client and stashes the access token into the `admin_token` variable. NBES validates the RS256 signature via the JWKS path.\n4. To test narrower roles (auditor, security_officer, examiner) you need users with those role assignments. Invite via IAM (`POST /api/v1/admin/invite/` or the UI), then run the corresponding `Keycloak token (...)` request with their credentials.\n\n### B. HS256 dev mint (no IAM needed, no Keycloak)\n\nSet `KEYCLOAK_ENABLED=False` in `nbes-backend/.env`. Mint tokens with the snippet at the bottom of this description, paste into the variable boxes. NBES skips the JWKS path.\n\n```python\n# mint_token.py — run as: python mint_token.py auditor\nimport jwt, uuid, time, sys\nROLE = sys.argv[1] if len(sys.argv) > 1 else 'system_administrator'\nSECRET = 'shared-jwt-secret-between-iam-and-nbes'   # JWT_SECRET_KEY in .env\npayload = {\n    'sub':   str(uuid.uuid4()),\n    'email': f'{ROLE}@example.com',\n    'iat':   int(time.time()),\n    'exp':   int(time.time()) + 3600,\n    'realm_access':    {'roles': ['super_admin'] if ROLE == 'super_admin' else []},\n    'resource_access': {'nbes-api': {'roles': [ROLE]}},\n}\nprint(jwt.encode(payload, SECRET, algorithm='HS256'))\n```\n\n## Notes\n\n- Every mutation writes an `AuditEvent`. Every 403 writes `AUTHZ_DENIED` + a `SecurityEvent(authz_denied)`.\n- State-mutating verbs (`POST`/`PUT`/`PATCH`/`DELETE`) require an `Idempotency-Key` header — the `IdempotencyKeyMiddleware` rejects them otherwise (folder 8 covers this).\n- The edge throttle activates at 100 rejected (401/403/429) responses from one IP in 15 minutes (folder 8).",
+		"name": "NBES \u2014 RBAC + Sprint 1.3 (Audit / SecOps / Dashboards)",
+		"description": "End-to-end test suite for the NBES backend.\n\n## Scope\n\n- **Sprint 1.2** \u2014 Roles, Permissions & RBAC Gateway (folders 1\u20134)\n- **Sprint 1.3** \u2014 Audit hardening, Security Operations Console, Role Dashboard Skeletons, System 17 idempotency (folders 5\u20138)\n\n## Two ways to get tokens\n\n### A. Through IAM + Keycloak (recommended \u2014 exercises the production token path)\n\n1. Boot IAM:\n   ```bash\n   cd iam && docker compose up -d keycloak postgres\n   python manage.py migrate\n   python manage.py seed_superadmins\n   python manage.py seed_systems\n   python manage.py provision_keycloak_clients\n   python manage.py seed_system_roles\n   ```\n2. Boot NBES with `KEYCLOAK_ENABLED=True` pointing at the local Keycloak:\n   ```bash\n   cd ../nbes-backend\n   docker compose up -d db redis web\n   docker compose exec web python manage.py migrate\n   ```\n3. Run **folder `0 \u00b7 Setup`** in this collection. The first request (`Keycloak token (super_admin)`) does a Keycloak resource-owner-password-grant against the `clet-iam-internal` client and stashes the access token into the `admin_token` variable. NBES validates the RS256 signature via the JWKS path.\n4. To test narrower roles (auditor, security_officer, examiner) you need users with those role assignments. Invite via IAM (`POST /api/v1/admin/invite/` or the UI), then run the corresponding `Keycloak token (...)` request with their credentials.\n\n### B. HS256 dev mint (no IAM needed, no Keycloak)\n\nSet `KEYCLOAK_ENABLED=False` in `nbes-backend/.env`. Mint tokens with the snippet at the bottom of this description, paste into the variable boxes. NBES skips the JWKS path.\n\n```python\n# mint_token.py \u2014 run as: python mint_token.py auditor\nimport jwt, uuid, time, sys\nROLE = sys.argv[1] if len(sys.argv) > 1 else 'system_administrator'\nSECRET = 'shared-jwt-secret-between-iam-and-nbes'   # JWT_SECRET_KEY in .env\npayload = {\n    'sub':   str(uuid.uuid4()),\n    'email': f'{ROLE}@example.com',\n    'iat':   int(time.time()),\n    'exp':   int(time.time()) + 3600,\n    'realm_access':    {'roles': ['super_admin'] if ROLE == 'super_admin' else []},\n    'resource_access': {'nbes-api': {'roles': [ROLE]}},\n}\nprint(jwt.encode(payload, SECRET, algorithm='HS256'))\n```\n\n## Notes\n\n- Every mutation writes an `AuditEvent`. Every 403 writes `AUTHZ_DENIED` + a `SecurityEvent(authz_denied)`.\n- State-mutating verbs (`POST`/`PUT`/`PATCH`/`DELETE`) require an `Idempotency-Key` header \u2014 the `IdempotencyKeyMiddleware` rejects them otherwise (folder 8 covers this).\n- The edge throttle activates at 100 rejected (401/403/429) responses from one IP in 15 minutes (folder 8).",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"auth": {
 		"type": "bearer",
 		"bearer": [
-			{ "key": "token", "value": "{{admin_token}}", "type": "string" }
+			{
+				"key": "token",
+				"value": "{{admin_token}}",
+				"type": "string"
+			}
 		]
 	},
 	"variable": [
-		{ "key": "base_url",                "value": "http://localhost:8003",        "type": "string" },
-		{ "key": "iam_base_url",            "value": "http://localhost:8001",        "type": "string" },
-		{ "key": "keycloak_url",            "value": "http://localhost:8080",        "type": "string" },
-		{ "key": "keycloak_realm",          "value": "clet-internal",                "type": "string" },
-		{ "key": "keycloak_client_id",      "value": "clet-iam-internal",            "type": "string" },
-		{ "key": "keycloak_client_secret",  "value": "change-me",                    "type": "string" },
-		{ "key": "admin_email",             "value": "root1@example.com",            "type": "string" },
-		{ "key": "admin_password",          "value": "RootPass123!",                 "type": "string" },
-		{ "key": "auditor_email",           "value": "auditor@example.com",          "type": "string" },
-		{ "key": "auditor_password",        "value": "AuditorPass1!",                "type": "string" },
-		{ "key": "security_officer_email",  "value": "secop@example.com",            "type": "string" },
-		{ "key": "security_officer_password","value": "SecOpPass1!",                 "type": "string" },
-		{ "key": "examiner_email",          "value": "examiner@example.com",         "type": "string" },
-		{ "key": "examiner_password",       "value": "ExaminerPass1!",               "type": "string" },
-		{ "key": "writer_email",            "value": "writer@example.com",           "type": "string" },
-		{ "key": "writer_password",         "value": "WriterPass1!",                 "type": "string" },
-		{ "key": "admin_token",             "value": "PASTE_OR_RUN_FOLDER_0",        "type": "string" },
-		{ "key": "writer_token",            "value": "PASTE_OR_RUN_FOLDER_0",        "type": "string" },
-		{ "key": "auditor_token",           "value": "PASTE_OR_RUN_FOLDER_0",        "type": "string" },
-		{ "key": "security_officer_token",  "value": "PASTE_OR_RUN_FOLDER_0",        "type": "string" },
-		{ "key": "examiner_token",          "value": "PASTE_OR_RUN_FOLDER_0",        "type": "string" },
-		{ "key": "role_id",                 "value": "",                             "type": "string" },
-		{ "key": "new_role_name",           "value": "external-reviewer",            "type": "string" },
-		{ "key": "panel_key",               "value": "examiner.marking_queue",       "type": "string" },
-		{ "key": "idempotency_key",         "value": "",                             "type": "string" },
-		{ "key": "yesterday_utc",           "value": "",                             "type": "string" }
+		{
+			"key": "base_url",
+			"value": "http://localhost:8003",
+			"type": "string"
+		},
+		{
+			"key": "iam_base_url",
+			"value": "http://localhost:8001",
+			"type": "string"
+		},
+		{
+			"key": "keycloak_url",
+			"value": "http://localhost:8080",
+			"type": "string"
+		},
+		{
+			"key": "keycloak_realm",
+			"value": "clet-internal",
+			"type": "string"
+		},
+		{
+			"key": "keycloak_client_id",
+			"value": "clet-iam-internal",
+			"type": "string"
+		},
+		{
+			"key": "keycloak_client_secret",
+			"value": "change-me",
+			"type": "string"
+		},
+		{
+			"key": "admin_email",
+			"value": "root1@example.com",
+			"type": "string"
+		},
+		{
+			"key": "admin_password",
+			"value": "RootPass123!",
+			"type": "string"
+		},
+		{
+			"key": "auditor_email",
+			"value": "auditor@example.com",
+			"type": "string"
+		},
+		{
+			"key": "auditor_password",
+			"value": "AuditorPass1!",
+			"type": "string"
+		},
+		{
+			"key": "security_officer_email",
+			"value": "secop@example.com",
+			"type": "string"
+		},
+		{
+			"key": "security_officer_password",
+			"value": "SecOpPass1!",
+			"type": "string"
+		},
+		{
+			"key": "examiner_email",
+			"value": "examiner@example.com",
+			"type": "string"
+		},
+		{
+			"key": "examiner_password",
+			"value": "ExaminerPass1!",
+			"type": "string"
+		},
+		{
+			"key": "writer_email",
+			"value": "writer@example.com",
+			"type": "string"
+		},
+		{
+			"key": "writer_password",
+			"value": "WriterPass1!",
+			"type": "string"
+		},
+		{
+			"key": "admin_token",
+			"value": "PASTE_OR_RUN_FOLDER_0",
+			"type": "string"
+		},
+		{
+			"key": "writer_token",
+			"value": "PASTE_OR_RUN_FOLDER_0",
+			"type": "string"
+		},
+		{
+			"key": "auditor_token",
+			"value": "PASTE_OR_RUN_FOLDER_0",
+			"type": "string"
+		},
+		{
+			"key": "security_officer_token",
+			"value": "PASTE_OR_RUN_FOLDER_0",
+			"type": "string"
+		},
+		{
+			"key": "examiner_token",
+			"value": "PASTE_OR_RUN_FOLDER_0",
+			"type": "string"
+		},
+		{
+			"key": "role_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "new_role_name",
+			"value": "external-reviewer",
+			"type": "string"
+		},
+		{
+			"key": "panel_key",
+			"value": "examiner.marking_queue",
+			"type": "string"
+		},
+		{
+			"key": "idempotency_key",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "yesterday_utc",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "user_id",
+			"value": "",
+			"type": "string"
+		}
 	],
 	"item": [
 		{
-			"name": "0 · Setup — Get tokens (Keycloak direct)",
+			"name": "0 \u00b7 Setup \u2014 Get tokens (Keycloak direct)",
 			"description": "Resource-owner-password-grant against `clet-iam-internal`. Returns a real RS256 token NBES validates via JWKS. Run the user you care about; subsequent requests pick up the saved token.\n\nIf the user does not exist yet, invite them through IAM first.",
 			"item": [
 				{
-					"name": "Keycloak token (super_admin → admin_token)",
+					"name": "Keycloak token (super_admin \u2192 admin_token)",
 					"event": [
 						{
 							"listen": "test",
@@ -65,32 +178,63 @@
 					],
 					"request": {
 						"method": "POST",
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"header": [
-							{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+							{
+								"key": "Content-Type",
+								"value": "application/x-www-form-urlencoded"
+							}
 						],
 						"body": {
 							"mode": "urlencoded",
 							"urlencoded": [
-								{ "key": "client_id",     "value": "{{keycloak_client_id}}" },
-								{ "key": "client_secret", "value": "{{keycloak_client_secret}}" },
-								{ "key": "grant_type",    "value": "password" },
-								{ "key": "username",      "value": "{{admin_email}}" },
-								{ "key": "password",      "value": "{{admin_password}}" },
-								{ "key": "scope",         "value": "openid" }
+								{
+									"key": "client_id",
+									"value": "{{keycloak_client_id}}"
+								},
+								{
+									"key": "client_secret",
+									"value": "{{keycloak_client_secret}}"
+								},
+								{
+									"key": "grant_type",
+									"value": "password"
+								},
+								{
+									"key": "username",
+									"value": "{{admin_email}}"
+								},
+								{
+									"key": "password",
+									"value": "{{admin_password}}"
+								},
+								{
+									"key": "scope",
+									"value": "openid"
+								}
 							]
 						},
 						"url": {
 							"raw": "{{keycloak_url}}/realms/{{keycloak_realm}}/protocol/openid-connect/token",
-							"host": ["{{keycloak_url}}"],
-							"path": ["realms", "{{keycloak_realm}}", "protocol", "openid-connect", "token"]
+							"host": [
+								"{{keycloak_url}}"
+							],
+							"path": [
+								"realms",
+								"{{keycloak_realm}}",
+								"protocol",
+								"openid-connect",
+								"token"
+							]
 						},
-						"description": "Resource-owner-password-grant. Bypasses IAM's MFA flow (intentional — MFA is fiddly to automate). The token still has the correct realm/client roles attached by the audience-resolve mapper."
+						"description": "Resource-owner-password-grant. Bypasses IAM's MFA flow (intentional \u2014 MFA is fiddly to automate). The token still has the correct realm/client roles attached by the audience-resolve mapper."
 					},
 					"response": []
 				},
 				{
-					"name": "Keycloak token (auditor → auditor_token)",
+					"name": "Keycloak token (auditor \u2192 auditor_token)",
 					"event": [
 						{
 							"listen": "test",
@@ -105,31 +249,62 @@
 					],
 					"request": {
 						"method": "POST",
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"header": [
-							{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+							{
+								"key": "Content-Type",
+								"value": "application/x-www-form-urlencoded"
+							}
 						],
 						"body": {
 							"mode": "urlencoded",
 							"urlencoded": [
-								{ "key": "client_id",     "value": "{{keycloak_client_id}}" },
-								{ "key": "client_secret", "value": "{{keycloak_client_secret}}" },
-								{ "key": "grant_type",    "value": "password" },
-								{ "key": "username",      "value": "{{auditor_email}}" },
-								{ "key": "password",      "value": "{{auditor_password}}" },
-								{ "key": "scope",         "value": "openid" }
+								{
+									"key": "client_id",
+									"value": "{{keycloak_client_id}}"
+								},
+								{
+									"key": "client_secret",
+									"value": "{{keycloak_client_secret}}"
+								},
+								{
+									"key": "grant_type",
+									"value": "password"
+								},
+								{
+									"key": "username",
+									"value": "{{auditor_email}}"
+								},
+								{
+									"key": "password",
+									"value": "{{auditor_password}}"
+								},
+								{
+									"key": "scope",
+									"value": "openid"
+								}
 							]
 						},
 						"url": {
 							"raw": "{{keycloak_url}}/realms/{{keycloak_realm}}/protocol/openid-connect/token",
-							"host": ["{{keycloak_url}}"],
-							"path": ["realms", "{{keycloak_realm}}", "protocol", "openid-connect", "token"]
+							"host": [
+								"{{keycloak_url}}"
+							],
+							"path": [
+								"realms",
+								"{{keycloak_realm}}",
+								"protocol",
+								"openid-connect",
+								"token"
+							]
 						}
 					},
 					"response": []
 				},
 				{
-					"name": "Keycloak token (security_officer → security_officer_token)",
+					"name": "Keycloak token (security_officer \u2192 security_officer_token)",
 					"event": [
 						{
 							"listen": "test",
@@ -144,31 +319,62 @@
 					],
 					"request": {
 						"method": "POST",
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"header": [
-							{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+							{
+								"key": "Content-Type",
+								"value": "application/x-www-form-urlencoded"
+							}
 						],
 						"body": {
 							"mode": "urlencoded",
 							"urlencoded": [
-								{ "key": "client_id",     "value": "{{keycloak_client_id}}" },
-								{ "key": "client_secret", "value": "{{keycloak_client_secret}}" },
-								{ "key": "grant_type",    "value": "password" },
-								{ "key": "username",      "value": "{{security_officer_email}}" },
-								{ "key": "password",      "value": "{{security_officer_password}}" },
-								{ "key": "scope",         "value": "openid" }
+								{
+									"key": "client_id",
+									"value": "{{keycloak_client_id}}"
+								},
+								{
+									"key": "client_secret",
+									"value": "{{keycloak_client_secret}}"
+								},
+								{
+									"key": "grant_type",
+									"value": "password"
+								},
+								{
+									"key": "username",
+									"value": "{{security_officer_email}}"
+								},
+								{
+									"key": "password",
+									"value": "{{security_officer_password}}"
+								},
+								{
+									"key": "scope",
+									"value": "openid"
+								}
 							]
 						},
 						"url": {
 							"raw": "{{keycloak_url}}/realms/{{keycloak_realm}}/protocol/openid-connect/token",
-							"host": ["{{keycloak_url}}"],
-							"path": ["realms", "{{keycloak_realm}}", "protocol", "openid-connect", "token"]
+							"host": [
+								"{{keycloak_url}}"
+							],
+							"path": [
+								"realms",
+								"{{keycloak_realm}}",
+								"protocol",
+								"openid-connect",
+								"token"
+							]
 						}
 					},
 					"response": []
 				},
 				{
-					"name": "Keycloak token (examiner → examiner_token)",
+					"name": "Keycloak token (examiner \u2192 examiner_token)",
 					"event": [
 						{
 							"listen": "test",
@@ -183,31 +389,62 @@
 					],
 					"request": {
 						"method": "POST",
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"header": [
-							{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+							{
+								"key": "Content-Type",
+								"value": "application/x-www-form-urlencoded"
+							}
 						],
 						"body": {
 							"mode": "urlencoded",
 							"urlencoded": [
-								{ "key": "client_id",     "value": "{{keycloak_client_id}}" },
-								{ "key": "client_secret", "value": "{{keycloak_client_secret}}" },
-								{ "key": "grant_type",    "value": "password" },
-								{ "key": "username",      "value": "{{examiner_email}}" },
-								{ "key": "password",      "value": "{{examiner_password}}" },
-								{ "key": "scope",         "value": "openid" }
+								{
+									"key": "client_id",
+									"value": "{{keycloak_client_id}}"
+								},
+								{
+									"key": "client_secret",
+									"value": "{{keycloak_client_secret}}"
+								},
+								{
+									"key": "grant_type",
+									"value": "password"
+								},
+								{
+									"key": "username",
+									"value": "{{examiner_email}}"
+								},
+								{
+									"key": "password",
+									"value": "{{examiner_password}}"
+								},
+								{
+									"key": "scope",
+									"value": "openid"
+								}
 							]
 						},
 						"url": {
 							"raw": "{{keycloak_url}}/realms/{{keycloak_realm}}/protocol/openid-connect/token",
-							"host": ["{{keycloak_url}}"],
-							"path": ["realms", "{{keycloak_realm}}", "protocol", "openid-connect", "token"]
+							"host": [
+								"{{keycloak_url}}"
+							],
+							"path": [
+								"realms",
+								"{{keycloak_realm}}",
+								"protocol",
+								"openid-connect",
+								"token"
+							]
 						}
 					},
 					"response": []
 				},
 				{
-					"name": "Keycloak token (item_writer → writer_token)",
+					"name": "Keycloak token (item_writer \u2192 writer_token)",
 					"event": [
 						{
 							"listen": "test",
@@ -222,25 +459,56 @@
 					],
 					"request": {
 						"method": "POST",
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"header": [
-							{ "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+							{
+								"key": "Content-Type",
+								"value": "application/x-www-form-urlencoded"
+							}
 						],
 						"body": {
 							"mode": "urlencoded",
 							"urlencoded": [
-								{ "key": "client_id",     "value": "{{keycloak_client_id}}" },
-								{ "key": "client_secret", "value": "{{keycloak_client_secret}}" },
-								{ "key": "grant_type",    "value": "password" },
-								{ "key": "username",      "value": "{{writer_email}}" },
-								{ "key": "password",      "value": "{{writer_password}}" },
-								{ "key": "scope",         "value": "openid" }
+								{
+									"key": "client_id",
+									"value": "{{keycloak_client_id}}"
+								},
+								{
+									"key": "client_secret",
+									"value": "{{keycloak_client_secret}}"
+								},
+								{
+									"key": "grant_type",
+									"value": "password"
+								},
+								{
+									"key": "username",
+									"value": "{{writer_email}}"
+								},
+								{
+									"key": "password",
+									"value": "{{writer_password}}"
+								},
+								{
+									"key": "scope",
+									"value": "openid"
+								}
 							]
 						},
 						"url": {
 							"raw": "{{keycloak_url}}/realms/{{keycloak_realm}}/protocol/openid-connect/token",
-							"host": ["{{keycloak_url}}"],
-							"path": ["realms", "{{keycloak_realm}}", "protocol", "openid-connect", "token"]
+							"host": [
+								"{{keycloak_url}}"
+							],
+							"path": [
+								"realms",
+								"{{keycloak_realm}}",
+								"protocol",
+								"openid-connect",
+								"token"
+							]
 						}
 					},
 					"response": []
@@ -272,8 +540,14 @@
 						"method": "GET",
 						"url": {
 							"raw": "{{base_url}}/api/schema/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "schema", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"schema",
+								""
+							]
 						},
 						"description": "Calls a benign endpoint just so the request runs; the meaningful work is in the test script which decodes the admin_token and confirms the claim shape."
 					},
@@ -282,7 +556,7 @@
 			]
 		},
 		{
-			"name": "0 · Health & Introspection",
+			"name": "0 \u00b7 Health & Introspection",
 			"item": [
 				{
 					"name": "My permissions (admin)",
@@ -290,22 +564,37 @@
 						"method": "GET",
 						"url": {
 							"raw": "{{base_url}}/api/v1/me/permissions/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "me", "permissions", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"me",
+								"permissions",
+								""
+							]
 						},
 						"description": "Returns what NBES thinks the bearer can do. `roles_in_jwt` is straight from the token; `roles_recognised_by_nbes` is the subset that maps to an active `Role` row; `permissions` is the resolved set the gateway enforces.\n\nUse this to confirm the admin token works before running any mutation."
 					},
 					"response": [
 						{
-							"name": "200 OK — admin token",
+							"name": "200 OK \u2014 admin token",
 							"originalRequest": {
 								"method": "GET",
-								"url": { "raw": "{{base_url}}/api/v1/me/permissions/" }
+								"url": {
+									"raw": "{{base_url}}/api/v1/me/permissions/"
+								}
 							},
 							"status": "OK",
 							"code": 200,
 							"_postman_previewlanguage": "json",
-							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
 							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"sub\": \"4b1f2e91-0e85-4f63-9b6a-2eaa6d2f0001\",\n    \"email\": \"admin@nbes.test\",\n    \"roles_in_jwt\": [\"system_administrator\"],\n    \"roles_recognised_by_nbes\": [\"system_administrator\"],\n    \"permissions\": [\"rbac:manage\"]\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
 						}
 					]
@@ -313,7 +602,7 @@
 			]
 		},
 		{
-			"name": "1 · Permission catalog (read-only)",
+			"name": "1 \u00b7 Permission catalog (read-only)",
 			"item": [
 				{
 					"name": "List permissions",
@@ -321,8 +610,17 @@
 						"method": "GET",
 						"url": {
 							"raw": "{{base_url}}/api/v1/admin/rbac/permissions/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "admin", "rbac", "permissions", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"permissions",
+								""
+							]
 						},
 						"description": "Lists every codename NBES enforces. Seeded from `apps/users/migrations/0001_initial.py` plus 0005 (audit:search/verify), 0006 (secops:view), 0007 (dashboards:manage)."
 					},
@@ -332,7 +630,12 @@
 							"status": "OK",
 							"code": 200,
 							"_postman_previewlanguage": "json",
-							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
 							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"count\": 25,\n    \"permissions\": [\n      {\"codename\": \"audit:export\"},\n      {\"codename\": \"audit:search\"},\n      {\"codename\": \"audit:verify\"},\n      {\"codename\": \"cert:trigger\"},\n      {\"codename\": \"committee:manage\"},\n      {\"codename\": \"dashboards:manage\"},\n      {\"codename\": \"item:approve\"},\n      {\"codename\": \"item:create\"},\n      {\"codename\": \"rbac:manage\"},\n      {\"codename\": \"secops:view\"}\n    ]\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
 						}
 					]
@@ -340,7 +643,7 @@
 			]
 		},
 		{
-			"name": "2 · Role registry",
+			"name": "2 \u00b7 Role registry",
 			"item": [
 				{
 					"name": "List roles",
@@ -348,8 +651,17 @@
 						"method": "GET",
 						"url": {
 							"raw": "{{base_url}}/api/v1/admin/rbac/roles/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "admin", "rbac", "roles", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"roles",
+								""
+							]
 						},
 						"description": "Lists every role NBES recognises. Sprint 1.3 adds `security_officer`."
 					},
@@ -359,7 +671,12 @@
 							"status": "OK",
 							"code": 200,
 							"_postman_previewlanguage": "json",
-							"header": [{ "key": "Content-Type", "value": "application/json" }],
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
 							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"count\": 10,\n    \"roles\": [\n      {\"name\": \"auditor\",              \"permissions\": [\"audit:export\", \"audit:search\", \"audit:verify\"]},\n      {\"name\": \"candidate\",            \"permissions\": [\"registration:self\", \"resit:register\", \"results:view:own\"]},\n      {\"name\": \"clet_registrar\",       \"permissions\": [\"cert:trigger\", \"registration:eligibility:override\", \"results:publish:approve\", \"sla:view\"]},\n      {\"name\": \"examiner\",             \"permissions\": [\"marking:second_mark\"]},\n      {\"name\": \"item_writer\",          \"permissions\": [\"item:create\"]},\n      {\"name\": \"moderator\",            \"permissions\": [\"item:approve\", \"marking:moderate\"]},\n      {\"name\": \"nbec_member\",          \"permissions\": [\"audit:export\", \"committee:manage\", \"item:approve\"]},\n      {\"name\": \"nbec_secretariat\",     \"permissions\": [\"committee:manage\", \"reporting:view\", \"sla:view\"]},\n      {\"name\": \"security_officer\",     \"permissions\": [\"secops:view\"]},\n      {\"name\": \"system_administrator\", \"permissions\": [\"audit:search\", \"audit:verify\", \"dashboards:manage\", \"rbac:manage\", \"secops:view\"]}\n    ]\n  },\n  \"meta\": {\"request_id\": \"\"}\n}"
 						}
 					]
@@ -384,19 +701,34 @@
 					"request": {
 						"method": "POST",
 						"header": [
-							{ "key": "Content-Type", "value": "application/json" },
-							{ "key": "Idempotency-Key", "value": "{{$randomUUID}}" }
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{$randomUUID}}"
+							}
 						],
 						"url": {
 							"raw": "{{base_url}}/api/v1/admin/rbac/roles/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "admin", "rbac", "roles", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"roles",
+								""
+							]
 						},
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"name\": \"{{new_role_name}}\",\n  \"description\": \"External reviewer brought in by NBEC for a single cycle\"\n}"
 						},
-						"description": "Tells NBES it should recognise a role name. Idempotent: re-posting the same name returns the existing row with 200 OK.\n\nNote the `Idempotency-Key` header — mandatory on all state-mutating verbs."
+						"description": "Tells NBES it should recognise a role name. Idempotent: re-posting the same name returns the existing row with 200 OK.\n\nNote the `Idempotency-Key` header \u2014 mandatory on all state-mutating verbs."
 					},
 					"response": []
 				},
@@ -406,8 +738,18 @@
 						"method": "GET",
 						"url": {
 							"raw": "{{base_url}}/api/v1/admin/rbac/roles/{{role_id}}/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "admin", "rbac", "roles", "{{role_id}}", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"roles",
+								"{{role_id}}",
+								""
+							]
 						}
 					},
 					"response": []
@@ -417,17 +759,33 @@
 					"request": {
 						"method": "PATCH",
 						"header": [
-							{ "key": "Content-Type", "value": "application/json" },
-							{ "key": "Idempotency-Key", "value": "{{$randomUUID}}" }
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{$randomUUID}}"
+							}
 						],
 						"url": {
 							"raw": "{{base_url}}/api/v1/admin/rbac/roles/{{role_id}}/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "admin", "rbac", "roles", "{{role_id}}", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"roles",
+								"{{role_id}}",
+								""
+							]
 						},
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"description\": \"External reviewer — appointed by NBEC for the 2026 cycle\"\n}"
+							"raw": "{\n  \"description\": \"External reviewer \u2014 appointed by NBEC for the 2026 cycle\"\n}"
 						}
 					},
 					"response": []
@@ -437,12 +795,25 @@
 					"request": {
 						"method": "DELETE",
 						"header": [
-							{ "key": "Idempotency-Key", "value": "{{$randomUUID}}" }
+							{
+								"key": "Idempotency-Key",
+								"value": "{{$randomUUID}}"
+							}
 						],
 						"url": {
 							"raw": "{{base_url}}/api/v1/admin/rbac/roles/{{role_id}}/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "admin", "rbac", "roles", "{{role_id}}", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"roles",
+								"{{role_id}}",
+								""
+							]
 						},
 						"description": "Marks the role inactive. Historical audit rows still resolve. Users holding this role lose every NBES permission within 60 s."
 					},
@@ -451,7 +822,7 @@
 			]
 		},
 		{
-			"name": "3 · Role ↔ permission matrix",
+			"name": "3 \u00b7 Role \u2194 permission matrix",
 			"item": [
 				{
 					"name": "Get role permissions",
@@ -459,8 +830,19 @@
 						"method": "GET",
 						"url": {
 							"raw": "{{base_url}}/api/v1/admin/rbac/roles/{{role_id}}/permissions/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "admin", "rbac", "roles", "{{role_id}}", "permissions", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"roles",
+								"{{role_id}}",
+								"permissions",
+								""
+							]
 						}
 					},
 					"response": []
@@ -470,13 +852,30 @@
 					"request": {
 						"method": "PUT",
 						"header": [
-							{ "key": "Content-Type", "value": "application/json" },
-							{ "key": "Idempotency-Key", "value": "{{$randomUUID}}" }
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{$randomUUID}}"
+							}
 						],
 						"url": {
 							"raw": "{{base_url}}/api/v1/admin/rbac/roles/{{role_id}}/permissions/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "admin", "rbac", "roles", "{{role_id}}", "permissions", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"roles",
+								"{{role_id}}",
+								"permissions",
+								""
+							]
 						},
 						"body": {
 							"mode": "raw",
@@ -490,13 +889,30 @@
 					"request": {
 						"method": "PUT",
 						"header": [
-							{ "key": "Content-Type", "value": "application/json" },
-							{ "key": "Idempotency-Key", "value": "{{$randomUUID}}" }
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{$randomUUID}}"
+							}
 						],
 						"url": {
 							"raw": "{{base_url}}/api/v1/admin/rbac/roles/{{role_id}}/permissions/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "admin", "rbac", "roles", "{{role_id}}", "permissions", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"roles",
+								"{{role_id}}",
+								"permissions",
+								""
+							]
 						},
 						"body": {
 							"mode": "raw",
@@ -508,7 +924,7 @@
 			]
 		},
 		{
-			"name": "4 · Denial scenarios",
+			"name": "4 \u00b7 Denial scenarios",
 			"description": "Confirms the gateway rejects unauthorised callers AND records both an audit event AND a SecurityEvent(authz_denied).",
 			"item": [
 				{
@@ -516,13 +932,27 @@
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{writer_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{writer_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/admin/rbac/permissions/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "admin", "rbac", "permissions", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"permissions",
+								""
+							]
 						},
 						"description": "An item_writer should never see the admin surface. Expect 403 AUTHZ_DENIED, an `AuditEvent(action=\"AUTHZ_DENIED\")` row, and a `SecurityEvent(category=\"authz_denied\")` row (new in Sprint 1.3)."
 					},
@@ -533,13 +963,26 @@
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{writer_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{writer_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/me/permissions/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "me", "permissions", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"me",
+								"permissions",
+								""
+							]
 						}
 					},
 					"response": []
@@ -548,11 +991,22 @@
 					"name": "No token (expect 401)",
 					"request": {
 						"method": "GET",
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/admin/rbac/permissions/",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "admin", "rbac", "permissions", ""]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"permissions",
+								""
+							]
 						}
 					},
 					"response": []
@@ -560,41 +1014,85 @@
 			]
 		},
 		{
-			"name": "5 · Audit (Sprint 1.3)",
-			"description": "The Auditor's three surfaces — search, hash-chain proof, NDJSON export. Plus a forced denial via the writer token to prove the new audit:* codenames gate as expected.",
+			"name": "5 \u00b7 Audit (Sprint 1.3)",
+			"description": "The Auditor's three surfaces \u2014 search, hash-chain proof, NDJSON export. Plus a forced denial via the writer token to prove the new audit:* codenames gate as expected.",
 			"item": [
 				{
 					"name": "Search audit trail",
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{auditor_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{auditor_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/audit/search?action=AUDIT_SEARCH",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "audit", "search"],
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"audit",
+								"search"
+							],
 							"query": [
-								{ "key": "action",     "value": "AUDIT_SEARCH" },
-								{ "key": "actor",      "value": "", "disabled": true },
-								{ "key": "entity_type","value": "", "disabled": true },
-								{ "key": "entity_id",  "value": "", "disabled": true },
-								{ "key": "request_id", "value": "", "disabled": true },
-								{ "key": "from",       "value": "", "disabled": true },
-								{ "key": "to",         "value": "", "disabled": true }
+								{
+									"key": "action",
+									"value": "AUDIT_SEARCH"
+								},
+								{
+									"key": "actor",
+									"value": "",
+									"disabled": true
+								},
+								{
+									"key": "entity_type",
+									"value": "",
+									"disabled": true
+								},
+								{
+									"key": "entity_id",
+									"value": "",
+									"disabled": true
+								},
+								{
+									"key": "request_id",
+									"value": "",
+									"disabled": true
+								},
+								{
+									"key": "from",
+									"value": "",
+									"disabled": true
+								},
+								{
+									"key": "to",
+									"value": "",
+									"disabled": true
+								}
 							]
 						},
-						"description": "GET /api/v1/audit/search — paginated, filterable. Every call writes its own `AUDIT_SEARCH` AuditEvent (meta-audit)."
+						"description": "GET /api/v1/audit/search \u2014 paginated, filterable. Every call writes its own `AUDIT_SEARCH` AuditEvent (meta-audit)."
 					},
 					"response": [
 						{
-							"name": "200 OK — paginated results",
+							"name": "200 OK \u2014 paginated results",
 							"status": "OK",
 							"code": 200,
 							"_postman_previewlanguage": "json",
-							"header": [{ "key": "Content-Type", "value": "application/json" }],
-							"body": "{\n  \"success\": true,\n  \"data\": [\n    {\n      \"event_id\": \"11111111-1111-1111-1111-111111111111\",\n      \"actor_id\": \"4b1f2e91-0e85-4f63-9b6a-2eaa6d2f0001\",\n      \"action\": \"AUDIT_SEARCH\",\n      \"entity_type\": \"audit\",\n      \"entity_id\": null,\n      \"new_state\": {\"filters\": {\"action\": \"AUDIT_SEARCH\"}, \"result_count\": 5},\n      \"chain_hash\": \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\n      \"created_at\": \"2026-05-20T10:00:00Z\"\n    }\n  ],\n  \"meta\": {\"page\": 1, \"total\": 5, \"pages\": 1, \"request_id\": \"…\"}\n}"
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "{\n  \"success\": true,\n  \"data\": [\n    {\n      \"event_id\": \"11111111-1111-1111-1111-111111111111\",\n      \"actor_id\": \"4b1f2e91-0e85-4f63-9b6a-2eaa6d2f0001\",\n      \"action\": \"AUDIT_SEARCH\",\n      \"entity_type\": \"audit\",\n      \"entity_id\": null,\n      \"new_state\": {\"filters\": {\"action\": \"AUDIT_SEARCH\"}, \"result_count\": 5},\n      \"chain_hash\": \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\n      \"created_at\": \"2026-05-20T10:00:00Z\"\n    }\n  ],\n  \"meta\": {\"page\": 1, \"total\": 5, \"pages\": 1, \"request_id\": \"\u2026\"}\n}"
 						}
 					]
 				},
@@ -603,16 +1101,34 @@
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{auditor_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{auditor_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/audit/search?from=2026-05-19&to=2026-05-20",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "audit", "search"],
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"audit",
+								"search"
+							],
 							"query": [
-								{ "key": "from", "value": "2026-05-19" },
-								{ "key": "to",   "value": "2026-05-20" }
+								{
+									"key": "from",
+									"value": "2026-05-19"
+								},
+								{
+									"key": "to",
+									"value": "2026-05-20"
+								}
 							]
 						}
 					},
@@ -623,32 +1139,55 @@
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{auditor_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{auditor_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/audit/chain/{{yesterday_utc}}",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "audit", "chain", "{{yesterday_utc}}"]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"audit",
+								"chain",
+								"{{yesterday_utc}}"
+							]
 						},
 						"description": "Hash-chain proof for one UTC day. Returns the head hash + (once notarised) the System 22 anchor reference.\n\nFirst run the daily Celery task manually so an anchor exists:\n```bash\ndocker compose exec web python manage.py shell -c 'from apps.audit.tasks import daily_hash_anchor; print(daily_hash_anchor.run())'\n```\n\nThen set the `yesterday_utc` variable to e.g. `2026-05-19`."
 					},
 					"response": [
 						{
-							"name": "200 OK — anchored day",
+							"name": "200 OK \u2014 anchored day",
 							"status": "OK",
 							"code": 200,
 							"_postman_previewlanguage": "json",
-							"header": [{ "key": "Content-Type", "value": "application/json" }],
-							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"date\": \"2026-05-19\",\n    \"head_event_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"head_hash\": \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\n    \"event_count\": 482,\n    \"exported_to_s22_at\": \"2026-05-20T01:00:14Z\",\n    \"anchor_ref\": \"s22:anc:2026-05-19:9f86d08188\",\n    \"verifiable\": true,\n    \"created_at\": \"2026-05-20T01:00:00Z\"\n  },\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"date\": \"2026-05-19\",\n    \"head_event_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"head_hash\": \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\n    \"event_count\": 482,\n    \"exported_to_s22_at\": \"2026-05-20T01:00:14Z\",\n    \"anchor_ref\": \"s22:anc:2026-05-19:9f86d08188\",\n    \"verifiable\": true,\n    \"created_at\": \"2026-05-20T01:00:00Z\"\n  },\n  \"meta\": {\"request_id\": \"\u2026\"}\n}"
 						},
 						{
-							"name": "404 — no anchor yet",
+							"name": "404 \u2014 no anchor yet",
 							"status": "Not Found",
 							"code": 404,
 							"_postman_previewlanguage": "json",
-							"header": [{ "key": "Content-Type", "value": "application/json" }],
-							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"NOT_FOUND\",\n    \"message\": \"No hash anchor exists for 2026-05-19 yet. The daily anchor task runs at 01:00 UTC the following day.\"\n  },\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/problem+json"
+								}
+							],
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Not Found\",\n  \"status\": 404,\n  \"detail\": \"No hash anchor exists for 2026-05-19 yet. The daily anchor task runs at 01:00 UTC the following day.\",\n  \"instance\": \"\\u2026\"\n}"
 						}
 					]
 				},
@@ -657,16 +1196,34 @@
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{auditor_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{auditor_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/audit/export?from=2026-05-19&to=2026-05-20",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "audit", "export"],
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"audit",
+								"export"
+							],
 							"query": [
-								{ "key": "from", "value": "2026-05-19" },
-								{ "key": "to",   "value": "2026-05-20" }
+								{
+									"key": "from",
+									"value": "2026-05-19"
+								},
+								{
+									"key": "to",
+									"value": "2026-05-20"
+								}
 							]
 						},
 						"description": "Streamed NDJSON, one event per line. Suitable for judicial-review bundles. Use `--output -O` with curl to capture the suggested filename from `Content-Disposition`."
@@ -678,13 +1235,25 @@
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{writer_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{writer_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/audit/search",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "audit", "search"]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"audit",
+								"search"
+							]
 						},
 						"description": "item_writer holds neither `audit:search` nor wildcard; expect 403 plus AuditEvent(AUTHZ_DENIED) + SecurityEvent(authz_denied)."
 					},
@@ -693,7 +1262,7 @@
 			]
 		},
 		{
-			"name": "6 · Security Operations (Sprint 1.3)",
+			"name": "6 \u00b7 Security Operations (Sprint 1.3)",
 			"description": "The Security Officer's live view. Every endpoint is gated by `secops:view`, granted to `security_officer` and `system_administrator`.",
 			"item": [
 				{
@@ -701,26 +1270,47 @@
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{security_officer_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{security_officer_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/secops/auth-failures?window=24h",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "secops", "auth-failures"],
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"secops",
+								"auth-failures"
+							],
 							"query": [
-								{ "key": "window", "value": "24h", "description": "15m | 24h | 7d" }
+								{
+									"key": "window",
+									"value": "24h",
+									"description": "15m | 24h | 7d"
+								}
 							]
 						}
 					},
 					"response": [
 						{
-							"name": "200 OK — counts + top IPs",
+							"name": "200 OK \u2014 counts + top IPs",
 							"status": "OK",
 							"code": 200,
 							"_postman_previewlanguage": "json",
-							"header": [{ "key": "Content-Type", "value": "application/json" }],
-							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"window\": \"24h\",\n    \"window_seconds\": 86400,\n    \"since\": \"2026-05-19T12:00:00Z\",\n    \"total\": 142,\n    \"by_category\": {\n      \"auth_token_invalid\": 105,\n      \"authz_denied\":         32,\n      \"throttle_applied\":      4,\n      \"ip_blocked\":            1\n    },\n    \"top_ips\": [\n      {\"ip\": \"203.0.113.7\", \"count\": 101},\n      {\"ip\": \"203.0.113.8\", \"count\":  18}\n    ]\n  },\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"window\": \"24h\",\n    \"window_seconds\": 86400,\n    \"since\": \"2026-05-19T12:00:00Z\",\n    \"total\": 142,\n    \"by_category\": {\n      \"auth_token_invalid\": 105,\n      \"authz_denied\":         32,\n      \"throttle_applied\":      4,\n      \"ip_blocked\":            1\n    },\n    \"top_ips\": [\n      {\"ip\": \"203.0.113.7\", \"count\": 101},\n      {\"ip\": \"203.0.113.8\", \"count\":  18}\n    ]\n  },\n  \"meta\": {\"request_id\": \"\u2026\"}\n}"
 						}
 					]
 				},
@@ -729,13 +1319,25 @@
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{security_officer_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{security_officer_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/secops/throttled-ips",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "secops", "throttled-ips"]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"secops",
+								"throttled-ips"
+							]
 						},
 						"description": "Joins SecurityEvent rows from the last 24h with the live Redis sentinels tracking active throttles/blocks. `retry_after_seconds` is the TTL remaining on the sentinel."
 					},
@@ -745,8 +1347,13 @@
 							"status": "OK",
 							"code": 200,
 							"_postman_previewlanguage": "json",
-							"header": [{ "key": "Content-Type", "value": "application/json" }],
-							"body": "{\n  \"success\": true,\n  \"data\": [\n    {\n      \"ip\": \"203.0.113.7\",\n      \"category\": \"ip_blocked\",\n      \"occurred_at\": \"2026-05-20T11:42:03Z\",\n      \"active\": true,\n      \"retry_after_seconds\": 86234,\n      \"indicators\": {\"count\": 1000, \"window_seconds\": 86400, \"path\": \"/api/v1/audit/search\", \"method\": \"GET\"}\n    },\n    {\n      \"ip\": \"203.0.113.7\",\n      \"category\": \"throttle_applied\",\n      \"occurred_at\": \"2026-05-20T11:30:17Z\",\n      \"active\": false,\n      \"retry_after_seconds\": null,\n      \"indicators\": {\"count\": 100, \"window_seconds\": 900}\n    }\n  ],\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "{\n  \"success\": true,\n  \"data\": [\n    {\n      \"ip\": \"203.0.113.7\",\n      \"category\": \"ip_blocked\",\n      \"occurred_at\": \"2026-05-20T11:42:03Z\",\n      \"active\": true,\n      \"retry_after_seconds\": 86234,\n      \"indicators\": {\"count\": 1000, \"window_seconds\": 86400, \"path\": \"/api/v1/audit/search\", \"method\": \"GET\"}\n    },\n    {\n      \"ip\": \"203.0.113.7\",\n      \"category\": \"throttle_applied\",\n      \"occurred_at\": \"2026-05-20T11:30:17Z\",\n      \"active\": false,\n      \"retry_after_seconds\": null,\n      \"indicators\": {\"count\": 100, \"window_seconds\": 900}\n    }\n  ],\n  \"meta\": {\"request_id\": \"\u2026\"}\n}"
 						}
 					]
 				},
@@ -755,15 +1362,27 @@
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{security_officer_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{security_officer_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/secops/anomalies",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "secops", "anomalies"]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"secops",
+								"anomalies"
+							]
 						},
-						"description": "Returns SecurityEvent rows with category `anomaly_detected`. The detector itself is COULD per blueprint §1.9 and not in Sprint 1.3 — this endpoint exists so the dashboard contract is stable. Returns `[]`."
+						"description": "Returns SecurityEvent rows with category `anomaly_detected`. The detector itself is COULD per blueprint \u00a71.9 and not in Sprint 1.3 \u2014 this endpoint exists so the dashboard contract is stable. Returns `[]`."
 					},
 					"response": []
 				},
@@ -772,15 +1391,30 @@
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{security_officer_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{security_officer_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/secops/daily-summary?date={{yesterday_utc}}",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "secops", "daily-summary"],
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"secops",
+								"daily-summary"
+							],
 							"query": [
-								{ "key": "date", "value": "{{yesterday_utc}}" }
+								{
+									"key": "date",
+									"value": "{{yesterday_utc}}"
+								}
 							]
 						},
 						"description": "Per-day rollup. Mirrors the payload the `daily_security_summary` Celery task emails the Security Officer at 06:00 UTC. Omit `date` to default to yesterday UTC."
@@ -792,13 +1426,25 @@
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{writer_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{writer_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/secops/auth-failures",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "secops", "auth-failures"]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"secops",
+								"auth-failures"
+							]
 						}
 					},
 					"response": []
@@ -806,17 +1452,25 @@
 			]
 		},
 		{
-			"name": "7 · Dashboards (Sprint 1.3)",
+			"name": "7 \u00b7 Dashboards (Sprint 1.3)",
 			"description": "Role-specific dashboard skeletons. Frontend reads `/dashboard/me` on login and renders the panels for the user's roles.",
 			"item": [
 				{
-					"name": "My dashboard (admin → 5 panels)",
+					"name": "My dashboard (admin \u2192 5 panels)",
 					"request": {
 						"method": "GET",
 						"url": {
-							"raw": "{{base_url}}/api/v1/dashboard/me",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "dashboard", "me"]
+							"raw": "{{base_url}}/api/v1/me/dashboard/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"me",
+								"dashboard",
+								""
+							]
 						}
 					},
 					"response": [
@@ -825,39 +1479,87 @@
 							"status": "OK",
 							"code": 200,
 							"_postman_previewlanguage": "json",
-							"header": [{ "key": "Content-Type", "value": "application/json" }],
-							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"roles\": [\"system_administrator\"],\n    \"panels\": [\n      {\"panel_key\": \"admin.users\",         \"panel_name\": \"Users\",         \"role_codename\": \"system_administrator\", \"display_order\": 10, \"is_active\": true, \"default_config\": {}, \"updated_at\": \"…\"},\n      {\"panel_key\": \"admin.roles\",         \"panel_name\": \"Roles\",         \"role_codename\": \"system_administrator\", \"display_order\": 20, \"is_active\": true, \"default_config\": {}, \"updated_at\": \"…\"},\n      {\"panel_key\": \"admin.integrations\",  \"panel_name\": \"Integrations\",  \"role_codename\": \"system_administrator\", \"display_order\": 30, \"is_active\": true, \"default_config\": {}, \"updated_at\": \"…\"},\n      {\"panel_key\": \"admin.audit\",         \"panel_name\": \"Audit\",         \"role_codename\": \"system_administrator\", \"display_order\": 40, \"is_active\": true, \"default_config\": {}, \"updated_at\": \"…\"},\n      {\"panel_key\": \"admin.system_health\", \"panel_name\": \"System health\", \"role_codename\": \"system_administrator\", \"display_order\": 50, \"is_active\": true, \"default_config\": {}, \"updated_at\": \"…\"}\n    ]\n  },\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"originalRequest": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/api/v1/me/dashboard/",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"api",
+										"v1",
+										"me",
+										"dashboard",
+										""
+									]
+								}
+							},
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"roles\": [\n      \"system_administrator\"\n    ],\n    \"panels\": [\n      {\n        \"panel_key\": \"system_administrator.users\",\n        \"panel_name\": \"Users\",\n        \"role_codename\": \"system_administrator\",\n        \"display_order\": 10,\n        \"default_config\": {}\n      },\n      {\n        \"panel_key\": \"system_administrator.roles\",\n        \"panel_name\": \"Roles\",\n        \"role_codename\": \"system_administrator\",\n        \"display_order\": 20,\n        \"default_config\": {}\n      },\n      {\n        \"panel_key\": \"system_administrator.integrations\",\n        \"panel_name\": \"Integrations\",\n        \"role_codename\": \"system_administrator\",\n        \"display_order\": 30,\n        \"default_config\": {}\n      },\n      {\n        \"panel_key\": \"system_administrator.audit\",\n        \"panel_name\": \"Audit\",\n        \"role_codename\": \"system_administrator\",\n        \"display_order\": 40,\n        \"default_config\": {}\n      },\n      {\n        \"panel_key\": \"system_administrator.system_health\",\n        \"panel_name\": \"System health\",\n        \"role_codename\": \"system_administrator\",\n        \"display_order\": 50,\n        \"default_config\": {}\n      }\n    ]\n  },\n  \"meta\": {\n    \"request_id\": \"\\u2026\"\n  }\n}"
 						}
 					]
 				},
 				{
-					"name": "My dashboard (examiner → 2 panels)",
+					"name": "My dashboard (examiner \u2192 2 panels)",
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{examiner_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{examiner_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
-							"raw": "{{base_url}}/api/v1/dashboard/me",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "dashboard", "me"]
+							"raw": "{{base_url}}/api/v1/me/dashboard/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"me",
+								"dashboard",
+								""
+							]
 						}
 					},
 					"response": []
 				},
 				{
-					"name": "My dashboard (auditor → 3 panels)",
+					"name": "My dashboard (auditor \u2192 3 panels)",
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{auditor_token}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{auditor_token}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
-							"raw": "{{base_url}}/api/v1/dashboard/me",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "dashboard", "me"]
+							"raw": "{{base_url}}/api/v1/me/dashboard/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"me",
+								"dashboard",
+								""
+							]
 						}
 					},
 					"response": []
@@ -880,19 +1582,33 @@
 					"request": {
 						"method": "PATCH",
 						"header": [
-							{ "key": "Content-Type", "value": "application/json" },
-							{ "key": "Idempotency-Key", "value": "{{idempotency_key}}" }
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{idempotency_key}}"
+							}
 						],
 						"url": {
 							"raw": "{{base_url}}/api/v1/dashboard/panels/{{panel_key}}",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "dashboard", "panels", "{{panel_key}}"]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"dashboard",
+								"panels",
+								"{{panel_key}}"
+							]
 						},
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"display_order\": 5,\n  \"default_config\": {\"filter\": \"assigned_to_me\"}\n}"
 						},
-						"description": "Admin-only (`dashboards:manage`). PATCH the panel's display_order, name, is_active, or default_config — no redeploy needed.\n\n`idempotency_key` is set by the pre-request script so the **Replay** request below uses the same key."
+						"description": "Admin-only (`dashboards:manage`). PATCH the panel's display_order, name, is_active, or default_config \u2014 no redeploy needed.\n\n`idempotency_key` is set by the pre-request script so the **Replay** request below uses the same key."
 					},
 					"response": []
 				},
@@ -912,19 +1628,33 @@
 					"request": {
 						"method": "PATCH",
 						"header": [
-							{ "key": "Content-Type", "value": "application/json" },
-							{ "key": "Idempotency-Key", "value": "{{idempotency_key}}" }
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{idempotency_key}}"
+							}
 						],
 						"url": {
 							"raw": "{{base_url}}/api/v1/dashboard/panels/{{panel_key}}",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "dashboard", "panels", "{{panel_key}}"]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"dashboard",
+								"panels",
+								"{{panel_key}}"
+							]
 						},
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"display_order\": 5,\n  \"default_config\": {\"filter\": \"assigned_to_me\"}\n}"
 						},
-						"description": "Same key as the previous request → IdempotencyKeyMiddleware returns the cached response and the `X-Idempotent-Replay: true` response header."
+						"description": "Same key as the previous request \u2192 IdempotencyKeyMiddleware returns the cached response and the `X-Idempotent-Replay: true` response header."
 					},
 					"response": []
 				},
@@ -933,12 +1663,23 @@
 					"request": {
 						"method": "PATCH",
 						"header": [
-							{ "key": "Content-Type", "value": "application/json" }
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
 						],
 						"url": {
 							"raw": "{{base_url}}/api/v1/dashboard/panels/{{panel_key}}",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "dashboard", "panels", "{{panel_key}}"]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"dashboard",
+								"panels",
+								"{{panel_key}}"
+							]
 						},
 						"body": {
 							"mode": "raw",
@@ -952,8 +1693,13 @@
 							"status": "Bad Request",
 							"code": 400,
 							"_postman_previewlanguage": "json",
-							"header": [{ "key": "Content-Type", "value": "application/json" }],
-							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"IDEMPOTENCY_KEY_REQUIRED\",\n    \"message\": \"Idempotency-Key header is required for this verb.\"\n  },\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/problem+json"
+								}
+							],
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Bad Request\",\n  \"status\": 400,\n  \"detail\": \"Idempotency-Key header is required for this verb.\",\n  \"instance\": \"\\u2026\"\n}"
 						}
 					]
 				},
@@ -962,15 +1708,34 @@
 					"request": {
 						"method": "PATCH",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer {{examiner_token}}" },
-							{ "key": "Content-Type", "value": "application/json" },
-							{ "key": "Idempotency-Key", "value": "{{$randomUUID}}" }
+							{
+								"key": "Authorization",
+								"value": "Bearer {{examiner_token}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{$randomUUID}}"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/dashboard/panels/{{panel_key}}",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "dashboard", "panels", "{{panel_key}}"]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"dashboard",
+								"panels",
+								"{{panel_key}}"
+							]
 						},
 						"body": {
 							"mode": "raw",
@@ -982,32 +1747,541 @@
 			]
 		},
 		{
-			"name": "8 · Edge throttle smoke (manual)",
-			"description": "Fire 100+ requests with a deliberately bad token. The 101st should be 429 with `Retry-After: 900`. Run from a shell rather than Postman — Postman doesn't loop tidily, and the throttle keys on IP so a single request body won't move the counter past the threshold quickly.\n\n```bash\nfor i in $(seq 1 105); do\n  curl -s -o /dev/null -w \"%{http_code}\\n\" \\\n    http://localhost:8003/api/v1/audit/search \\\n    -H \"Authorization: Bearer not-a-real-token\"\ndone | sort | uniq -c\n# Expect: ~100 × 401, 5 × 429\n```\n\nThen run **6 · Currently throttled / blocked IPs** above to see the throttled IP listed with `active=true` and a `retry_after_seconds` close to 900.",
+			"name": "9 \u00b7 User Administration",
+			"description": "User profile CRUD, bulk import, and bulk role assignment. All endpoints require users:manage or users:import permission.",
 			"item": [
 				{
-					"name": "Bad token (use 105× from shell)",
+					"name": "List users",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/users/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"users",
+								""
+							],
+							"query": [
+								{
+									"key": "status",
+									"value": "active",
+									"disabled": true
+								},
+								{
+									"key": "role",
+									"value": "examiner",
+									"disabled": true
+								},
+								{
+									"key": "search",
+									"value": "",
+									"disabled": true
+								}
+							]
+						},
+						"description": "Paginated list of user profiles. Optional ?status=, ?role=, ?search= filters."
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"count\": 1,\n    \"users\": [\n      {\n        \"id\": \"{{user_id}}\",\n        \"keycloak_sub\": null,\n        \"email\": \"jane@example.com\",\n        \"first_name\": \"Jane\",\n        \"last_name\": \"Doe\",\n        \"status\": \"active\",\n        \"metadata\": {},\n        \"created_by\": null,\n        \"deactivated_at\": null,\n        \"created_at\": \"2026-05-25T10:00:00Z\",\n        \"updated_at\": \"2026-05-25T10:00:00Z\",\n        \"roles\": [\n          {\n            \"role_name\": \"examiner\",\n            \"effective_from\": \"2026-05-25\",\n            \"effective_to\": null\n          }\n        ]\n      }\n    ]\n  },\n  \"meta\": {\n    \"request_id\": \"\\u2026\"\n  }\n}"
+						}
+					]
+				},
+				{
+					"name": "Create user profile",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"const json = pm.response.json();",
+									"if (json.success && json.data && json.data.id) {",
+									"  pm.collectionVariables.set('user_id', json.data.id);",
+									"  console.log('user_id saved:', json.data.id);",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{$randomUUID}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"first_name\": \"Jane\",\n  \"last_name\": \"Doe\",\n  \"email\": \"jane@example.com\",\n  \"roles\": [\n    \"examiner\"\n  ],\n  \"effective_date\": \"2026-05-25\",\n  \"metadata\": {}\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/users/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"users",
+								""
+							]
+						},
+						"description": "Provision a user in Keycloak and create a local profile. Saves user_id for downstream requests."
+					},
+					"response": [
+						{
+							"name": "201 Created",
+							"status": "Created",
+							"code": 201,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"id\": \"11111111-1111-1111-1111-111111111111\",\n    \"keycloak_sub\": \"22222222-2222-2222-2222-222222222222\",\n    \"email\": \"jane@example.com\",\n    \"first_name\": \"Jane\",\n    \"last_name\": \"Doe\",\n    \"status\": \"pending_invite\",\n    \"metadata\": {},\n    \"created_by\": null,\n    \"deactivated_at\": null,\n    \"created_at\": \"2026-05-25T10:00:00Z\",\n    \"updated_at\": \"2026-05-25T10:00:00Z\",\n    \"roles\": [\n      {\n        \"role_name\": \"examiner\",\n        \"effective_from\": \"2026-05-25\",\n        \"effective_to\": null\n      }\n    ]\n  },\n  \"meta\": {\n    \"request_id\": \"\\u2026\"\n  }\n}"
+						},
+						{
+							"name": "403 Forbidden (no users:manage)",
+							"status": "Forbidden",
+							"code": 403,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/problem+json"
+								}
+							],
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Forbidden\",\n  \"status\": 403,\n  \"detail\": \"Permission denied.\",\n  \"instance\": \"\\u2026\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Get user profile",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/users/{{user_id}}/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"users",
+								"{{user_id}}",
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update user profile (PATCH)",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{$randomUUID}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"first_name\": \"Janet\",\n  \"metadata\": {\n    \"department\": \"Legal\"\n  }\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/users/{{user_id}}/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"users",
+								"{{user_id}}",
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "List role assignments for user",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/users/{{user_id}}/roles/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"users",
+								"{{user_id}}",
+								"roles",
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Assign role to user",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{$randomUUID}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"action\": \"assign\",\n  \"role\": \"examiner\",\n  \"effective_from\": \"2026-05-25\",\n  \"reason\": \"Test assign\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/users/{{user_id}}/roles/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"users",
+								"{{user_id}}",
+								"roles",
+								""
+							]
+						},
+						"description": "200 = direct assign; 202 = high-privilege role queued for two-admin approval; 409 = mutual-exclusion conflict or already assigned."
+					},
+					"response": [
+						{
+							"name": "202 Accepted (high-privilege role)",
+							"status": "Accepted",
+							"code": 202,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"approval_id\": \"33333333-3333-3333-3333-333333333333\",\n    \"message\": \"Role 'director_general' requires two-administrator approval.\",\n    \"expires_at\": \"2026-05-27T10:00:00Z\"\n  },\n  \"meta\": {\n    \"request_id\": \"\\u2026\"\n  }\n}"
+						},
+						{
+							"name": "403 Forbidden",
+							"status": "Forbidden",
+							"code": 403,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/problem+json"
+								}
+							],
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Forbidden\",\n  \"status\": 403,\n  \"detail\": \"Permission denied.\",\n  \"instance\": \"\\u2026\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Revoke role from user",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{$randomUUID}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"action\": \"revoke\",\n  \"role\": \"examiner\",\n  \"reason\": \"Test revoke\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/users/{{user_id}}/roles/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"users",
+								"{{user_id}}",
+								"roles",
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Bulk import users (CSV/XLSX)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Idempotency-Key",
+								"value": "{{$randomUUID}}"
+							}
+						],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "",
+									"description": "CSV or XLSX file with columns: first_name, last_name, email, roles (comma-separated). Optional: national_id, department."
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/users/import/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"users",
+								"import",
+								""
+							]
+						},
+						"description": "Partial-success: valid rows are provisioned; invalid rows are reported in row_errors. Requires users:import permission (step-up auth). Supported types: text/csv, .xlsx."
+					},
+					"response": [
+						{
+							"name": "200 OK (partial success)",
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"import_id\": \"44444444-4444-4444-4444-444444444444\",\n    \"total_rows\": 3,\n    \"success_count\": 2,\n    \"failure_count\": 1,\n    \"row_errors\": [\n      {\n        \"row\": 4,\n        \"email\": \"bad@example.com\",\n        \"errors\": [\n          \"email 'bad@example.com' already exists\"\n        ]\n      }\n    ]\n  },\n  \"meta\": {\n    \"request_id\": \"\\u2026\"\n  }\n}"
+						},
+						{
+							"name": "403 Forbidden (no users:import)",
+							"status": "Forbidden",
+							"code": 403,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/problem+json"
+								}
+							],
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Forbidden\",\n  \"status\": 403,\n  \"detail\": \"Permission denied.\",\n  \"instance\": \"\\u2026\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Bulk role assign/revoke",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{$randomUUID}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"action\": \"assign\",\n  \"role\": \"examiner\",\n  \"user_ids\": [\n    \"{{user_id}}\"\n  ],\n  \"effective_from\": \"2026-05-25\",\n  \"reason\": \"Bulk onboarding\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/rbac/users/bulk-roles/",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"rbac",
+								"users",
+								"bulk-roles",
+								""
+							]
+						},
+						"description": "Assign or revoke a single role across up to 500 existing profiles. High-privilege roles (director_general, system_administrator, nbec_member) are blocked \u2014 use the individual /roles/ endpoint instead. Mutual-exclusion and already-assigned checks are applied per user; failures are reported row-level without aborting the batch. Requires users:manage + step-up auth."
+					},
+					"response": [
+						{
+							"name": "200 OK",
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"body": "{\n  \"success\": true,\n  \"data\": {\n    \"success_count\": 1,\n    \"failure_count\": 0,\n    \"errors\": []\n  },\n  \"meta\": {\n    \"request_id\": \"\\u2026\"\n  }\n}"
+						},
+						{
+							"name": "400 Bad Request (high-privilege role)",
+							"status": "Bad Request",
+							"code": 400,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/problem+json"
+								}
+							],
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Bad Request\",\n  \"status\": 400,\n  \"detail\": \"Role 'director_general' requires individual two-administrator approval.\",\n  \"instance\": \"\\u2026\"\n}"
+						},
+						{
+							"name": "403 Forbidden",
+							"status": "Forbidden",
+							"code": 403,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/problem+json"
+								}
+							],
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Forbidden\",\n  \"status\": 403,\n  \"detail\": \"Permission denied.\",\n  \"instance\": \"\\u2026\"\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "8 \u00b7 Edge throttle smoke (manual)",
+			"description": "Fire 100+ requests with a deliberately bad token. The 101st should be 429 with `Retry-After: 900`. Run from a shell rather than Postman \u2014 Postman doesn't loop tidily, and the throttle keys on IP so a single request body won't move the counter past the threshold quickly.\n\n```bash\nfor i in $(seq 1 105); do\n  curl -s -o /dev/null -w \"%{http_code}\\n\" \\\n    http://localhost:8003/api/v1/audit/search \\\n    -H \"Authorization: Bearer not-a-real-token\"\ndone | sort | uniq -c\n# Expect: ~100 \u00d7 401, 5 \u00d7 429\n```\n\nThen run **6 \u00b7 Currently throttled / blocked IPs** above to see the throttled IP listed with `active=true` and a `retry_after_seconds` close to 900.",
+			"item": [
+				{
+					"name": "Bad token (use 105\u00d7 from shell)",
 					"request": {
 						"method": "GET",
 						"header": [
-							{ "key": "Authorization", "value": "Bearer not-a-real-token" }
+							{
+								"key": "Authorization",
+								"value": "Bearer not-a-real-token"
+							}
 						],
-						"auth": { "type": "noauth" },
+						"auth": {
+							"type": "noauth"
+						},
 						"url": {
 							"raw": "{{base_url}}/api/v1/audit/search",
-							"host": ["{{base_url}}"],
-							"path": ["api", "v1", "audit", "search"]
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"audit",
+								"search"
+							]
 						},
 						"description": "Single firing of the request that the shell loop above will fire 105 times. Useful for inspecting the response shape once."
 					},
 					"response": [
 						{
-							"name": "401 Unauthorized (1st – 100th)",
+							"name": "401 Unauthorized (1st \u2013 100th)",
 							"status": "Unauthorized",
 							"code": 401,
 							"_postman_previewlanguage": "json",
-							"header": [{ "key": "Content-Type", "value": "application/json" }],
-							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"NOT_AUTHENTICATED\",\n    \"message\": \"Token validation failed: …\"\n  },\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/problem+json"
+								}
+							],
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Unauthorized\",\n  \"status\": 401,\n  \"detail\": \"Token validation failed: \\u2026\",\n  \"instance\": \"\\u2026\"\n}"
 						},
 						{
 							"name": "429 Throttled (101st onward, with Retry-After)",
@@ -1015,10 +2289,16 @@
 							"code": 429,
 							"_postman_previewlanguage": "json",
 							"header": [
-								{ "key": "Content-Type", "value": "application/json" },
-								{ "key": "Retry-After",  "value": "900" }
+								{
+									"key": "Content-Type",
+									"value": "application/problem+json"
+								},
+								{
+									"key": "Retry-After",
+									"value": "900"
+								}
 							],
-							"body": "{\n  \"success\": false,\n  \"error\": {\n    \"code\": \"RATE_LIMITED\",\n    \"message\": \"Too many rejected requests from this IP — try again later.\"\n  },\n  \"meta\": {\"request_id\": \"…\"}\n}"
+							"body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Too Many Requests\",\n  \"status\": 429,\n  \"detail\": \"Too many rejected requests from this IP \\u2014 try again later.\",\n  \"instance\": \"\\u2026\"\n}"
 						}
 					]
 				}

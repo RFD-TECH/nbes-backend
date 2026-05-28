@@ -1,4 +1,4 @@
-﻿"""View sets for item authoring and submission workflows."""
+"""View sets for item authoring and submission workflows."""
 
 import logging
 from datetime import timedelta
@@ -19,7 +19,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.exceptions import NotFound
 from rest_framework.request import Request
 from rest_framework.test import APIRequestFactory
-from shared.permissions import has_permission
+from shared.permissions import has_permission, has_permission_with_step_up
 from shared.exceptions import error_response, success_response
 from drf_spectacular.utils import (
     extend_schema,
@@ -478,7 +478,7 @@ class AssetViewSet(viewsets.GenericViewSet):
 class VaultOperationsViewSet(viewsets.GenericViewSet):
     """Expose vault export request and cosign operations."""
 
-    permission_classes = [has_permission("vault:operate")]
+    permission_classes = [has_permission_with_step_up("vault:operate")]
     serializer_class = VaultExportSerializer
 
     @action(detail=False, methods=["post"], url_path="export-requests")
