@@ -7,7 +7,6 @@ validated via X-Mfa-Verified or X-Acr headers injected by the API Gateway.
 from __future__ import annotations
 
 import logging
-from typing import Any
 from django.conf import settings
 from rest_framework.permissions import BasePermission
 

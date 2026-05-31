@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from apps.sitting import services, variants
-from apps.sitting.blueprint import CoverageReport, validate_blueprint_coverage
+from apps.sitting.blueprint import validate_blueprint_coverage
 from apps.sitting.models import SubjectPaper, Variant
 
 

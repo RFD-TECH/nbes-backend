@@ -8,7 +8,6 @@ Full permission codename catalog (≥ 25 codenames seeded).
 """
 
 import uuid
-from datetime import timedelta
 
 import jwt
 from django.conf import settings
@@ -18,7 +17,6 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.users.models import (
-    HIGH_PRIVILEGE_ROLES,
     Permission,
     Role,
     RoleAssignmentApproval,
@@ -122,7 +120,7 @@ class MutualExclusionModelTests(TestCase):
     def test_revoked_role_not_counted_as_conflict(self):
         """A revoked item_writer assignment should not block moderator."""
         user3 = UserProfile.objects.create(email="user3@example.com", status="active")
-        ur = UserRole.objects.create(
+        UserRole.objects.create(
             user=user3,
             role=self.item_writer,
             effective_from=timezone.now().date(),

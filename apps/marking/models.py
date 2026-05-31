@@ -4,7 +4,7 @@ from django.db import models
 from django_fsm import FSMField, transition
 from workflow.guards import (
     ai_scoring_complete, is_borderline, no_moderator_conflict,
-    has_justification, reconciliation_required,
+    has_justification,
 )
 
 

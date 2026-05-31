@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Endpoints (mounted at ``/api/v1/sittings/`` — see ``urls.py``):
 
@@ -24,6 +22,8 @@ Endpoints (mounted at ``/api/v1/sittings/`` — see ``urls.py``):
 * ``GET    /blueprint-versions/{subject_code}/``     — list versions for a subject
 * ``POST   /blueprint-versions/{subject_code}/``     — publish a new version
 """
+from __future__ import annotations
+
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated

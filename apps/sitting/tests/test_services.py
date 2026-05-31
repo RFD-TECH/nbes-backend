@@ -16,7 +16,6 @@ import pytest
 
 from apps.sitting import services
 from apps.sitting.models import (
-    BlueprintVersion,
     Sitting,
     SittingLock,
     SittingLockEvent,

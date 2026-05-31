@@ -1,11 +1,9 @@
 """apps/committee/tests/test_views.py — NBEC Committee API view tests."""
 import datetime
-import json
 import uuid
 import jwt
 import pytest
 from django.conf import settings
-from django.urls import reverse
 from rest_framework.test import APIClient
 
 from apps.committee.models import (
@@ -359,7 +357,7 @@ class TestCOIPolicy:
         assert resp.json()["data"]["has_active_conflict"] is False
 
     def test_with_active_conflict(self, member):
-        coi = ConflictDeclaration.objects.create(
+        ConflictDeclaration.objects.create(
             member=member,
             subject_description="conflict",
             subject_type="candidate",

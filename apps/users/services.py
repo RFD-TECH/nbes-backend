@@ -403,7 +403,7 @@ def revoke_role(
 
 
 # ── Pluggable Active Assignment Checks ──────────────────────────────
-from typing import Callable
+from typing import Callable  # noqa: E402
 
 _ACTIVE_ASSIGNMENT_CHECKS: list[Callable] = []
 

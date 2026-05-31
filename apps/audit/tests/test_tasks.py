@@ -43,7 +43,6 @@ class PartitionTaskTests(TestCase):
     @patch("django.db.connection.vendor", "postgresql")
     @patch("django.db.connection.cursor")
     def test_precreate_audit_partitions_postgresql_runs_sql(self, mock_cursor):
-        from unittest.mock import patch
         from apps.audit.tasks import precreate_audit_partitions
         from datetime import datetime, timezone as py_timezone
 

@@ -3,8 +3,6 @@
 import logging
 from datetime import timedelta
 
-logger = logging.getLogger(__name__)
-
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import IntegerField, OuterRef, Q, Subquery, Sum, Value
@@ -78,6 +76,7 @@ from shared import rbac as shared_rbac
 from .serializers import AssetUploadSerializer
 from .services import process_asset_upload
 
+logger = logging.getLogger(__name__)
 
 def _validation_error_message(exc: ValidationError) -> str:
     """Render Django validation errors safely across Django versions."""

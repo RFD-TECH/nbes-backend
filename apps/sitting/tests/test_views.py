@@ -9,7 +9,6 @@ Focuses on:
 """
 import datetime
 import uuid
-from decimal import Decimal
 
 import jwt
 import pytest
@@ -17,8 +16,6 @@ from django.conf import settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
-from apps.sitting import services
-from apps.sitting.models import Sitting, SubjectPaper
 
 
 SECRETARIAT_SUB = "11111111-1111-1111-1111-111111111111"

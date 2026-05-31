@@ -28,13 +28,13 @@ import logging
 import jwt
 import requests
 
-logger = logging.getLogger(__name__)
 from django.conf import settings
 from django.core.cache import cache
 from jwt.algorithms import RSAAlgorithm
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 
+logger = logging.getLogger(__name__)
 
 JWKS_CACHE_SECONDS = 300
 

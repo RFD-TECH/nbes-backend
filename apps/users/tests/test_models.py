@@ -2,7 +2,7 @@ import uuid
 from django.db import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
-from apps.users.models import UserProfile, Role, UserRole, RoleChangeEvent, Permission, RolePermission
+from apps.users.models import UserProfile, Role, UserRole, RoleChangeEvent
 
 
 class UserProfileModelTests(TestCase):
@@ -82,7 +82,7 @@ class UserProfileModelTests(TestCase):
             email="examiner3@example.com",
             status="active"
         )
-        ur1 = UserRole.objects.create(
+        UserRole.objects.create(
             user=user,
             role=self.role,
             effective_from=timezone.now().date(),
