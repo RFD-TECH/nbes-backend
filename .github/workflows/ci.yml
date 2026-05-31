@@ -90,7 +90,7 @@ jobs:
         run: ruff check .
 
       - name: Security scan with bandit
-        run: bandit -r apps/ shared/ -ll --exclude apps/*/tests/
+        run: bandit -r apps/ shared/ -ll --exclude ./apps/cert_trigger/tests/,./apps/committee/tests/,./apps/itembank/tests/,./apps/marking/tests/,./apps/notifications/tests/,./apps/registration/tests/,./apps/reporting/tests/,./apps/resit/tests/,./apps/results/tests/,./apps/sitting/tests/,./apps/sla/tests/,./apps/users/tests/
 
       - name: Django system check
         run: python manage.py check
