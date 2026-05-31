@@ -3,7 +3,7 @@ import uuid
 from django.db import models
 from django_fsm import FSMField, transition
 from shared.validators import validate_index_number, validate_ghana_phone
-from workflow.guards import nlems_eligibility_verified, payment_confirmed
+from workflow.guards import nlems_eligibility_verified
 
 
 class Candidate(models.Model):

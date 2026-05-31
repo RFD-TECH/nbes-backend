@@ -16,8 +16,8 @@ Endpoints (Phase 2 — NBE-F01):
   GET    /api/v1/nbec/policy/coi/               — internal COI check
 """
 
-from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
-from rest_framework import serializers, status
+from drf_spectacular.utils import OpenApiParameter, extend_schema
+from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -92,7 +92,6 @@ class MemberListCreateView(APIView):
     )
     def get(self, request):
         qs = NBECMember.objects.all().order_by("full_name")
-        from shared.pagination import StandardResultsPagination
 
         paginator = StandardResultsPagination()
         result = paginator.paginate_queryset(qs, request)

@@ -4,7 +4,6 @@ All public functions accept and return Django model instances.
 Callers (views) are responsible for passing request_id / ip_address
 extracted from the DRF request object.
 """
-import uuid
 from django.db import transaction
 from django.utils import timezone
 

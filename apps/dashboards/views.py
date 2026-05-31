@@ -14,7 +14,6 @@ from __future__ import annotations
 from django.db import transaction
 from drf_spectacular.utils import (
     OpenApiExample,
-    OpenApiParameter,
     extend_schema,
     inline_serializer,
 )

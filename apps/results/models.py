@@ -2,7 +2,7 @@
 import uuid
 from django.db import models
 from django_fsm import FSMField, transition
-from workflow.guards import normalisation_complete, dg_signoff_recorded
+from workflow.guards import dg_signoff_recorded
 
 
 class ResultSet(models.Model):

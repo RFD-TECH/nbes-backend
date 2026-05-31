@@ -19,13 +19,11 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone as py_timezone
 
-from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Count
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from drf_spectacular.utils import (
-    OpenApiExample,
     OpenApiParameter,
     extend_schema,
     inline_serializer,

@@ -1,11 +1,9 @@
 """apps/committee/tests/test_views.py — NBEC Committee API view tests."""
 import datetime
-import json
 import uuid
 import jwt
 import pytest
 from django.conf import settings
-from django.urls import reverse
 from rest_framework.test import APIClient
 
 from apps.committee.models import (
@@ -36,6 +34,11 @@ def _client(roles=None, sub=None):
 
 def _secretariat_client():
     return _client(roles=["nbec_secretariat"])
+
+
+def _idem():
+    """Return a fresh idempotency key header dict for state-mutating calls."""
+    return {"HTTP_IDEMPOTENCY_KEY": str(uuid.uuid4())}
 
 
 ACTOR_SUB = "00000000-0000-0000-0000-000000000001"
@@ -110,18 +113,18 @@ class TestMemberCreate:
             "role": "member",
             "appointment_date": "2026-01-01",
             "is_voting_member": True,
-        }, format="json")
+        }, format="json", **_idem())
         assert resp.status_code == 201
         assert resp.json()["success"] is True
         assert resp.json()["data"]["full_name"] == "New Member"
 
     def test_unauthenticated_rejected(self):
-        resp = APIClient().post(self.url, data={}, format="json")
+        resp = APIClient().post(self.url, data={}, format="json", **_idem())
         assert resp.status_code == 401
 
     def test_missing_required_fields_rejected(self, db):
         client = _secretariat_client()
-        resp = client.post(self.url, data={"full_name": "No email"}, format="json")
+        resp = client.post(self.url, data={"full_name": "No email"}, format="json", **_idem())
         assert resp.status_code == 400
 
 
@@ -132,14 +135,14 @@ class TestMemberAmend:
     def test_amend_member(self, member):
         client = _secretariat_client()
         url = f"/api/v1/nbec/members/{member.id}/"
-        resp = client.patch(url, data={"full_name": "Amended Name"}, format="json")
+        resp = client.patch(url, data={"full_name": "Amended Name"}, format="json", **_idem())
         assert resp.status_code == 200
         assert resp.json()["data"]["full_name"] == "Amended Name"
 
     def test_amend_nonexistent_returns_404(self, db):
         client = _secretariat_client()
         url = f"/api/v1/nbec/members/{uuid.uuid4()}/"
-        resp = client.patch(url, data={"full_name": "X"}, format="json")
+        resp = client.patch(url, data={"full_name": "X"}, format="json", **_idem())
         assert resp.status_code == 404
 
 
@@ -150,7 +153,7 @@ class TestMemberActivate:
     def test_activate_member(self, member):
         client = _secretariat_client()
         url = f"/api/v1/nbec/members/{member.id}/activate/"
-        resp = client.post(url, format="json")
+        resp = client.post(url, format="json", **_idem())
         assert resp.status_code == 200
         assert resp.json()["data"]["status"] == "active"
 
@@ -168,12 +171,12 @@ class TestCOIDeclare:
             "subject_type": "supplier",
             "subject_description": "I know the director of this company",
             "nature": "financial",
-        }, format="json")
+        }, format="json", **_idem())
         assert resp.status_code == 201
         assert resp.json()["data"]["status"] == "pending"
 
     def test_unauthenticated_rejected(self):
-        resp = APIClient().post(self.url, data={}, format="json")
+        resp = APIClient().post(self.url, data={}, format="json", **_idem())
         assert resp.status_code == 401
 
 
@@ -189,7 +192,7 @@ class TestCOIReview:
         )
         client = _secretariat_client()
         url = f"/api/v1/nbec/coi/{coi.id}/review/"
-        resp = client.post(url, data={"approved": True}, format="json")
+        resp = client.post(url, data={"approved": True}, format="json", **_idem())
         assert resp.status_code == 200
         assert resp.json()["data"]["status"] == "approved"
 
@@ -201,14 +204,14 @@ class TestCOIReview:
         )
         client = _secretariat_client()
         url = f"/api/v1/nbec/coi/{coi.id}/review/"
-        resp = client.post(url, data={"approved": False}, format="json")
+        resp = client.post(url, data={"approved": False}, format="json", **_idem())
         assert resp.status_code == 200
         assert resp.json()["data"]["status"] == "dismissed"
 
     def test_nonexistent_coi_returns_404(self, db):
         client = _secretariat_client()
         url = f"/api/v1/nbec/coi/{uuid.uuid4()}/review/"
-        resp = client.post(url, data={"approved": True}, format="json")
+        resp = client.post(url, data={"approved": True}, format="json", **_idem())
         assert resp.status_code == 404
 
 
@@ -226,7 +229,7 @@ class TestMeetingCreate:
             "scheduled_date": "2026-10-01T10:00:00Z",
             "venue": "Board Room",
             "quorum_required": 5,
-        }, format="json")
+        }, format="json", **_idem())
         assert resp.status_code == 201
         assert resp.json()["data"]["status"] == "draft"
 
@@ -240,7 +243,7 @@ class TestMeetingAgenda:
         url = f"/api/v1/nbec/meetings/{meeting.id}/agenda/"
         resp = client.post(url, data={
             "items": [{"order": 1, "title": "Opening"}],
-        }, format="json")
+        }, format="json", **_idem())
         assert resp.status_code == 201
         assert resp.json()["data"]["version"] == 1
         meeting.refresh_from_db()
@@ -249,7 +252,7 @@ class TestMeetingAgenda:
     def test_nonexistent_meeting_returns_404(self, db):
         client = _secretariat_client()
         url = f"/api/v1/nbec/meetings/{uuid.uuid4()}/agenda/"
-        resp = client.post(url, data={"items": []}, format="json")
+        resp = client.post(url, data={"items": []}, format="json", **_idem())
         assert resp.status_code == 404
 
 
@@ -261,7 +264,7 @@ class TestMeetingAttendance:
         client = _secretariat_client()
         url = f"/api/v1/nbec/meetings/{meeting.id}/attendance/"
         ids = [str(uuid.uuid4()), str(uuid.uuid4())]
-        resp = client.post(url, data={"attendee_ids": ids}, format="json")
+        resp = client.post(url, data={"attendee_ids": ids}, format="json", **_idem())
         assert resp.status_code == 200
         meeting.refresh_from_db()
         assert len(meeting.attendees) == 2
@@ -278,14 +281,14 @@ class TestMeetingConveneAdjourn:
         meeting.refresh_from_db()
         client = _secretariat_client()
         url = f"/api/v1/nbec/meetings/{meeting.id}/convene/"
-        resp = client.post(url, format="json")
+        resp = client.post(url, format="json", **_idem())
         assert resp.status_code == 200
         assert resp.json()["data"]["status"] == "convened"
 
     def test_convene_without_quorum_returns_400(self, meeting):
         client = _secretariat_client()
         url = f"/api/v1/nbec/meetings/{meeting.id}/convene/"
-        resp = client.post(url, format="json")
+        resp = client.post(url, format="json", **_idem())
         assert resp.status_code == 400
 
     def test_adjourn_convened_meeting(self, meeting):
@@ -297,7 +300,7 @@ class TestMeetingConveneAdjourn:
         meeting.refresh_from_db()
         client = _secretariat_client()
         url = f"/api/v1/nbec/meetings/{meeting.id}/adjourn/"
-        resp = client.post(url, format="json")
+        resp = client.post(url, format="json", **_idem())
         assert resp.status_code == 200
         assert resp.json()["data"]["status"] == "adjourned"
 
@@ -309,20 +312,20 @@ class TestMinutesSign:
     def test_sign_minutes(self, unsigned_minutes):
         client = _secretariat_client()
         url = f"/api/v1/nbec/minutes/{unsigned_minutes.id}/sign/"
-        resp = client.post(url, data={"signature_ref": "sig/abc.sig"}, format="json")
+        resp = client.post(url, data={"signature_ref": "sig/abc.sig"}, format="json", **_idem())
         assert resp.status_code == 200
         assert resp.json()["data"]["approved"] is True
 
     def test_sign_already_signed_returns_400(self, signed_minutes):
         client = _secretariat_client()
         url = f"/api/v1/nbec/minutes/{signed_minutes.id}/sign/"
-        resp = client.post(url, data={}, format="json")
+        resp = client.post(url, data={}, format="json", **_idem())
         assert resp.status_code == 400
 
     def test_sign_nonexistent_returns_404(self, db):
         client = _secretariat_client()
         url = f"/api/v1/nbec/minutes/{uuid.uuid4()}/sign/"
-        resp = client.post(url, data={}, format="json")
+        resp = client.post(url, data={}, format="json", **_idem())
         assert resp.status_code == 404
 
 
@@ -335,14 +338,14 @@ class TestMinutesAddendum:
         url = f"/api/v1/nbec/minutes/{signed_minutes.id}/addendum/"
         resp = client.post(url, data={
             "content": "Correction to agenda item 2: the vote was unanimous."
-        }, format="json")
+        }, format="json", **_idem())
         assert resp.status_code == 201
         assert "Correction" in resp.json()["data"]["content"]
 
     def test_addendum_on_unsigned_returns_400(self, unsigned_minutes):
         client = _secretariat_client()
         url = f"/api/v1/nbec/minutes/{unsigned_minutes.id}/addendum/"
-        resp = client.post(url, data={"content": "Some addendum."}, format="json")
+        resp = client.post(url, data={"content": "Some addendum."}, format="json", **_idem())
         assert resp.status_code == 400
 
 
@@ -359,7 +362,7 @@ class TestCOIPolicy:
         assert resp.json()["data"]["has_active_conflict"] is False
 
     def test_with_active_conflict(self, member):
-        coi = ConflictDeclaration.objects.create(
+        ConflictDeclaration.objects.create(
             member=member,
             subject_description="conflict",
             subject_type="candidate",

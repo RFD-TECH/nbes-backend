@@ -11,7 +11,6 @@ AuditMiddleware:
 Reference: NBES System Architecture §2.1 — shared/middleware.py
 """
 
-import json
 import hashlib
 import logging
 import uuid
@@ -34,7 +33,7 @@ class JsonExceptionMiddleware:
     def __call__(self, request):
         try:
             response = self.get_response(request)
-        except Exception as exc:
+        except Exception:
             path = request.path
             is_api = (
                 path.startswith("/api/")

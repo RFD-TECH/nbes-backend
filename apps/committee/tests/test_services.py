@@ -5,7 +5,6 @@ import pytest
 from django.utils import timezone
 
 from apps.committee.models import (
-    ActionItem,
     ConflictDeclaration,
     Meeting,
     Minutes,

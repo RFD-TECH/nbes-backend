@@ -1,9 +1,7 @@
 """Unit and integration tests for §1.2.3 MFA & Step-Up Policy."""
 
 import uuid
-import jwt
 from unittest.mock import patch
-from django.conf import settings
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
@@ -11,7 +9,7 @@ from rest_framework.test import APIClient, APIRequestFactory
 
 from apps.users.models import Role, UserProfile, UserRole, Permission, RolePermission
 from apps.audit.models import AuditEvent, SecurityEvent
-from shared.step_up import STEP_UP_ACTIONS, check_step_up, requires_step_up
+from shared.step_up import check_step_up, requires_step_up
 from shared.permissions import has_permission_with_step_up
 
 

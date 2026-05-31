@@ -50,7 +50,7 @@ def minutes_obj(db, meeting):
 class TestNBECMember:
     def test_create_defaults(self, member):
         assert member.status == NBECMember.Status.DRAFT
-        assert member.is_active is True
+        assert member.is_active is False
         assert member.is_voting_member is True
 
     def test_activate_from_draft(self, member):

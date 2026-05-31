@@ -23,14 +23,11 @@ from shared import rbac
 from shared.permissions import has_permission, has_permission_with_step_up
 
 from .models import (
-    HIGH_PRIVILEGE_ROLES,
     Permission,
     Role,
     RoleAssignmentApproval,
-    RoleChangeEvent,
     RoleMutualExclusion,
     RolePermission,
-    UserRole,
 )
 from .serializers import (
     BulkRoleAssignSerializer,
@@ -913,7 +910,7 @@ class AdminUserDetailView(APIView):
         },
     )
     def patch(self, request, pk):
-        from apps.users.models import UserProfile, UserRole
+        from apps.users.models import UserProfile
         from shared import keycloak_admin
         from django.utils import timezone
         from shared.events import publish
@@ -1056,7 +1053,7 @@ class MyProfileView(APIView):
         },
     )
     def get(self, request):
-        from apps.users.models import UserProfile, UserRole, RolePermission
+        from apps.users.models import UserProfile
 
         payload = request.auth or {}
         sub = payload.get("sub")
@@ -1482,7 +1479,7 @@ class RoleAssignmentApprovalActionView(APIView):
         reviewer = request.user
         try:
             if action == "approve":
-                user_role = approval.do_approve(reviewer, note)
+                approval.do_approve(reviewer, note)
                 # Assign client role in Keycloak
                 if approval.target_user.keycloak_sub:
                     try:

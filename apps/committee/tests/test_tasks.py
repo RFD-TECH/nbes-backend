@@ -1,7 +1,7 @@
 """apps/committee/tests/test_tasks.py — monitor_tenure_expiry and escalate_overdue_actions."""
 import datetime
 import uuid
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import patch
 
 import pytest
 
